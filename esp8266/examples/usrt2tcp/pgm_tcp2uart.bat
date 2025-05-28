@@ -1,0 +1,1 @@
+C:\Espressif\utils\ESP8266\esptool.exe -p COM2 -b 230400 write_flash -ff 80m -fm qio -fs 4m 0x00000 fullflash_tcp2uart.bin

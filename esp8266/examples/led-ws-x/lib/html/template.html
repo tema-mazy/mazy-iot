@@ -1,0 +1,204 @@
+<!-- HTTP_HEAD -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta name='viewport' content='width=device-width, initial-scale=1, user-scalable=no'/>
+    <title>{title}</title>
+<!-- /HTTP_HEAD -->
+<!-- HTTP_STYLE -->
+<style>
+body { font-family: Arial, Helvetica, sans-serif;  font-size: 16px; line-height: 2.0em; text-align: center;}
+a { color: #336699;  padding: 5px; width: 100%;}
+.cont { max-width: 500px; text-align: left; }
+html, body { height: 100%; padding: 5px;}
+#colorpicker { border-radius: 50%; width: 50px; height: 50px; background: 1px solid #ccc; }
+
+.slidecontainer {  width: 100%; }
+.slider {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 5px;
+  border-radius: 5px;
+  background: #d3d3d3;
+  outline: none;
+  opacity: 0.7;
+  -webkit-transition: .2s;
+  transition: opacity .2s;
+}
+.red {
+	background: rgb(128, 0, 0);
+}
+.green {
+	background: rgb(0, 128, 0);
+}
+.blue {
+	background: rgb(0, 0, 128);
+}
+
+.slider:hover {  opacity: 1; }
+.slider::-webkit-slider-thumb {   -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #4CAF50;
+  cursor: pointer;
+}
+
+
+.cbc {
+  border: none;
+  padding: 8px;
+  text-decoration: none;
+  width: 100%;
+}
+input[type=button], input[type=submit], input[type=reset] {
+  background-color: #4CAF50;
+  border: none;
+  color: white;
+  padding: 16px 32px;
+  text-decoration: none;
+  margin: 4px 2px;
+  cursor: pointer;
+  width: 100%;
+}
+
+</style>
+<!-- /HTTP_STYLE -->
+<!-- HTTP_HEAD_END -->
+</head>
+<body>
+<div class='cont'>
+<h2>{title}</h2>
+<!-- /HTTP_HEAD_END -->
+<!-- HTTP_FORM_START -->
+<form method='get' action='/save' name='eform'>
+<!-- /HTTP_FORM_START -->
+<!-- HTTP_FORM_PARAM -->
+<h3>Загальні налаштування</h3>
+<div class='slidecontainer'>
+  <label for='brt'>Яскравість: <span id='bvo'>{bv}</span></label>
+  <input type='range' min='1' max='255' value='{bv}' class='slider' id='brt' name='brt'>
+</div>
+<div class='cbc'>
+  <input type='checkbox' {brbr} value='1' id='brbr' name='brbr'>
+  <label for='brbr'>"дихання" яскравості</label>
+</div>
+<div class='cbc'>
+  <input type='checkbox' {huc} value='1' id='huc' name='huc'>
+  <label for='huc'>зміна HUE</label>
+</div>
+
+<div class='slidecontainer'>
+  <label for='del'>Затримка зміни: <span id="dvo">{dv}</span>с</label>
+  <input type='range' min='0' max='300' value='{dv}' class='slider' id='del' name='del'>
+</div>
+
+<!-- /HTTP_FORM_PARAM -->
+<!-- HTTP_FORM_PARAME -->
+<h3>Ефекти</h3>
+
+<div class='cbc'>
+  <input type='checkbox' {stc}  id='e_stat' name='e_stat' value='1'>
+  <label for='e_stat'>Статичний колір</label>
+  <div id='colorpicker'>&nbsp;</div>
+  <div class='slidecontainer' >
+	  <input type='range' min='0' max='255' value='{csr}' class='slider red' id='csr' name='csr'>
+		<input type='range' min='0' max='255' value='{csg}' class='slider green' id='csg' name='csg'>
+		<input type='range' min='0' max='255' value='{csb}' class='slider blue' id='csb' name='csb'>
+	</div>
+</div>
+
+<div class='cbc'>
+  <input type='checkbox' {esc} value='1' id='e_snow' name='e_snow'>
+  <label for='e_snow'>Сніг</label>
+</div>
+<div class='cbc'>
+  <input type='checkbox' {erc} value='1' id='e_rain' name='e_rain'>
+  <label for='e_rain'>Райдуга</label>
+</div>
+<div class='cbc'>
+  <input type='checkbox' {elc} value='1' id='e_loin' name='e_loin'>
+  <label for='e_loin'>Повзунок</label>
+</div>
+<div class='cbc'>
+  <input type='checkbox' {ecc} value='1' id='e_conf' name='e_conf'>
+  <label for='e_conf'>Конфеті</label>
+</div>
+<div class='cbc'>
+  <input type='checkbox' {egc} value='1' id='e_glit' name='e_glit'>
+  <label for='e_glit'>Спалахи</label>
+</div>
+<!-- /HTTP_FORM_PARAME -->
+<!-- HTTP_FORM_END -->
+<div class='cbc'>
+  <input type='submit' id='sub' name='sub' val='Зберегти' />
+</div>
+
+</form>
+<!-- /HTTP_FORM_END -->
+
+<!-- HTTP_SCRIPT -->
+<script>
+function sendForm() {
+	let formData = new FormData(document.forms.eform);
+	let xhr = new XMLHttpRequest();
+	xhr.open('POST', '/update');
+	xhttp.onreadystatechange = function() {}
+	try {
+		xhr.send(formData);
+	} catch(err) { };
+};
+
+
+	var bslider = document.getElementById('brt');
+	var dslider = document.getElementById('del');
+	var bvo  = document.getElementById('bvo');
+	var dvo  = document.getElementById('dvo');
+	var colorpicker = document.getElementById('colorpicker');
+	var cslider_r = document.getElementById('csr');
+	var cslider_g = document.getElementById('csg');
+	var cslider_b = document.getElementById('csb');
+
+	bvo.innerHTML = bslider.value;
+	dvo.innerHTML = dslider.value;
+
+
+  bslider.oninput = function() { bvo.innerHTML = this.value; sendForm(); };
+  dslider.oninput = function() { dvo.innerHTML = this.value; sendForm(); };
+
+function changeColor() {
+	colorpicker.style.background='rgb('+cslider_r.value+','+cslider_g.value+','+cslider_b.value+')';
+};
+
+
+cslider_r.oninput = function() {
+	cslider_r.style.background='rgb('+this.value+',0,0)';
+	changeColor();
+	sendForm();
+};
+
+cslider_g.oninput = function() {
+	cslider_g.style.background='rgb(0,'+this.value+',0)';
+	changeColor();
+	sendForm();
+};
+
+cslider_b.oninput = function() {
+	cslider_b.style.background='rgb(0,0,'+this.value+')';
+	changeColor();
+	sendForm();
+};
+changeColor();
+
+
+</script>
+<!-- /HTTP_SCRIPT -->
+
+
+<!-- HTTP_END -->
+<hr />&copy; 2019 <a href='https://meow.kiev.ua/'>Mazy IoT</a>
+</div>
+</body>
+</html>
+<!-- /HTTP_END -->

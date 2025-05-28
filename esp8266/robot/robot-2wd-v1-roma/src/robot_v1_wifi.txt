@@ -1,0 +1,149 @@
+#include <Arduino.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <Servo.h>
+
+#define motorAspeed D1
+#define motorAdir   D3
+
+#define motorBspeed D2
+#define motorBdir   D4
+
+#define servoPin    D5
+
+#define FULL_SPEED  1023
+
+ESP8266WebServer server(80);
+Servo myservo;
+
+volatile unsigned int speed = FULL_SPEED;
+volatile unsigned int dir = 0;
+
+void stop(void) {
+    Serial.println("Stop");
+    digitalWrite(motorAspeed, LOW );
+    digitalWrite(motorBspeed, LOW );
+}
+void forward(void) {
+    Serial.println("FF");
+    analogWrite(motorAspeed, speed);
+    analogWrite(motorBspeed, speed);
+    digitalWrite(motorAdir, LOW);
+    digitalWrite(motorBdir, LOW);
+}
+void backward(void) {
+    Serial.println("FRW");
+    analogWrite(motorAspeed, speed);
+    analogWrite(motorBspeed, speed);
+    digitalWrite(motorAdir, HIGH);
+    digitalWrite(motorBdir, HIGH);
+}
+void left(void) {
+    Serial.println("TL");
+    analogWrite(motorAspeed, speed);
+    analogWrite(motorBspeed, speed);
+    digitalWrite(motorAdir, HIGH);
+    digitalWrite(motorBdir, LOW);
+}
+void right(void) {
+  Serial.println("TR");
+  analogWrite(motorAspeed, speed);
+  analogWrite(motorBspeed, speed);
+  digitalWrite(motorAdir, LOW);
+  digitalWrite(motorBdir, HIGH);
+}
+
+void handle_form() {
+  if (server.arg("speed"))  {
+    if (server.arg("speed").toInt() > 0) {
+      speed  = server.arg("speed").toInt();
+    }
+  }
+  if (server.arg("dir"))  {
+    dir = server.arg("dir").toInt();
+    switch (dir)   {
+      case 1:  left();
+        break;
+      case 2:  right();
+        break;
+      case 3:  backward();
+        break;
+      case 4: forward();
+        break;
+      case 5:  stop();
+        break;
+      case 6:  myservo.write(0); delay(5);
+        break;
+      case 7:  myservo.write(90); delay(5);
+        break;
+      case 8:  myservo.write(180); delay(5);
+        break;
+    }
+  }
+  String message = "<html><head>";
+     message  += "<style>";
+     message  += "body { font-family: Arial, Helvetica, sans-serif;  font-size: 16px; line-height: 2.0em; text-align: center;}";
+     message  +=" a { color: #ccc; border: 1px solid #333; background: #336699; padding: 5px; width: 100%;}";
+     message  +=".cont { max-width: 500px; text-align: left; }";
+     message  +=" html, body { height: 100%; padding: 5px;}</style>";
+     message  += "<meta name='viewport' content='width=device-width, initial-scale=1.0' />";
+     message  +="</head><body><div class='cont'>";
+     message  += "Speed: ";
+     message  += speed;
+     message  += "<br />\n";
+     message  += "Commnd: ";
+     message  += dir;
+     message  += "<br />\n";
+
+
+    message += "<center><form action='/'>"
+   "<button name='dir' type='submit' value='4'>Forward</button><br>"
+   "<button name='dir' type='submit' value='1'>Left</button>&nbsp;"
+   "<button name='dir' type='submit' value='2'>Right</button><br>"
+   "<button name='dir' type='submit' value='3'>Reverse</button><p>"
+   "<button name='dir' type='submit' value='5'>Stop</button><p>"
+   "<button name='speed' type='submit' value='1023'>Speed100%</button><p>"
+   "<button name='speed' type='submit' value='511'>Speed50%</button><p>"
+   "<button name='speed' type='submit' value='255'>Speed25%</button><p>"
+   "<button name='dir' type='submit' value='6'>Servo0</button>"
+   "<button name='dir' type='submit' value='7'>Servo90</button>"
+   "<button name='dir' type='submit' value='8'>Servo180</button>"
+   "</form></center>";
+
+     message  += "<hr /> © 2018 Mazy IoT";
+     message  += "</div></body></html>\n\n";
+
+     server.send(200, "text/html; charset=utf-8", message);
+}
+
+void setup() {
+  WiFi.begin("***", "**********");
+  while (WiFi.status() != WL_CONNECTED)  { delay(200); }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("WiFi connected");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+  }
+
+  server.on("/", handle_form);
+  server.begin();
+
+  pinMode(motorAspeed, OUTPUT);
+  digitalWrite(motorAspeed, LOW );
+  pinMode(motorAdir, OUTPUT);
+  digitalWrite(motorAdir, LOW );
+
+  pinMode(motorBspeed, OUTPUT);
+  digitalWrite(motorBspeed, LOW );
+  pinMode(motorBdir, OUTPUT);
+  digitalWrite(motorBdir, LOW );
+
+  myservo.attach(servoPin);
+
+  delay(1000);
+  Serial.println("Ready");
+}
+
+void loop() {
+  server.handleClient();
+}

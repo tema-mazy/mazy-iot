@@ -1,0 +1,28 @@
+; PlatformIO Project Configuration File
+;
+;   Build options: build flags, source filter
+;   Upload options: custom upload port, speed and extra flags
+;   Library options: dependencies, extra library storages
+;   Advanced options: extra scripting
+;
+; Please visit documentation for the other options and examples
+; http://docs.platformio.org/page/projectconf.html
+
+[platformio]
+workspace_dir=/tmp/pio-workspaces/$PROJECT_HASH
+
+
+
+[env:sonoffbasic]
+platform = espressif8266
+board = nodemcuv2
+framework = arduino
+build_flags =  -DBE_MINIMAL -D PIO_FRAMEWORK_ARDUINO_LWIP2_LOW_MEMORY
+lib_deps = EEPROM
+           OneWire
+           DallasTemperature
+	   WifiManager
+
+upload_flags =  --auth=En8shroyk9ov
+; Serial Monitor options
+monitor_baud = 9600

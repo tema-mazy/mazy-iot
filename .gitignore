@@ -1,0 +1,7 @@
+
+build/
+firmware/
+sdkconfig
+sdkconfig.old
+platformio.ini
+1
