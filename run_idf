@@ -1,0 +1,1 @@
+docker run -it -v .:/pro -w /pro espressif/idf:latest
