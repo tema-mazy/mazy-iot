@@ -193,6 +193,7 @@ homekit_characteristic_t cha_temperature = HOMEKIT_CHARACTERISTIC_(CURRENT_TEMPE
 homekit_characteristic_t cha_humidity  = HOMEKIT_CHARACTERISTIC_(CURRENT_RELATIVE_HUMIDITY, 0);
 homekit_characteristic_t cha_co2  = HOMEKIT_CHARACTERISTIC_(CARBON_DIOXIDE_LEVEL, 0);
 homekit_characteristic_t cha_co2_alert  = HOMEKIT_CHARACTERISTIC_(CARBON_DIOXIDE_DETECTED, false);
+homekit_characteristic_t cha_air  = HOMEKIT_CHARACTERISTIC_(AIR_QUALITY, 0);
 
 void i2c_init() {
     // Initialize I2C
@@ -255,6 +256,8 @@ void th_sensor_task(void *pvParameters) {
 void co_sensor_task(void *pvParameters) {
     int ppm = 111;
     int elapsed_time = 0;
+    int airq = 0;
+    bool alerted = false;
 
     while (1) {
             if (elapsed_time >= periodic_interval) {
@@ -275,13 +278,28 @@ void co_sensor_task(void *pvParameters) {
                     co2_init();
                 }
 
+		if (ppm > 1600) { airq = 5; } // Poor
+		else 
+		if (ppm > 1300) { airq = 4; } // Inferior
+		else 
+		if (ppm > 1000) { airq = 3; } // Fair
+		else 
+		if (ppm > 800) { airq = 2; } // Good
+		else 
+		if (ppm > 400) { airq = 1; } // Excellent
+		else 
+		{ airq = 0; } // Unknown
+		
                 cha_co2.value.float_value = ppm;
-    
                 homekit_characteristic_notify(&cha_co2, cha_co2.value);
-                cha_co2_alert.value.bool_value = ppm > ALERT;
+                cha_air.value.int_value = airq;
+                homekit_characteristic_notify(&cha_air, cha_air.value);
+                alerted = ppm > ALERT;
+                cha_co2_alert.value.bool_value = alerted;
                 homekit_characteristic_notify(&cha_co2_alert, cha_co2_alert.value);
 
-                ESP_LOGI("INFORMATION", "CO2 %dppm", ppm);
+
+                ESP_LOGI("INFORMATION", "CO2 %dppm, Alert: %d, AirQ: %d ", ppm, alerted, airq);
 
                 elapsed_time = 0;
             }
@@ -325,8 +343,9 @@ homekit_accessory_t *accessories[] = {
             &cha_humidity,
             NULL
         }),
-        HOMEKIT_SERVICE(CARBON_DIOXIDE_SENSOR, .characteristics=(homekit_characteristic_t*[]) {
-            HOMEKIT_CHARACTERISTIC(NAME, "CO2 ppm"),
+        HOMEKIT_SERVICE(AIR_QUALITY_SENSOR, .characteristics=(homekit_characteristic_t*[]) {
+            HOMEKIT_CHARACTERISTIC(NAME, "Air quality"),
+            &cha_air,
             &cha_co2,
             &cha_co2_alert,
             NULL
