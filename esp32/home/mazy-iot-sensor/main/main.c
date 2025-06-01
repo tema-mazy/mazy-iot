@@ -278,13 +278,13 @@ void co_sensor_task(void *pvParameters) {
                     co2_init();
                 }
 
-		if (ppm > 1600) { airq = 5; } // Poor
+		if (ppm > 1300) { airq = 5; } // Poor
 		else 
-		if (ppm > 1300) { airq = 4; } // Inferior
+		if (ppm > 1000) { airq = 4; } // Inferior
 		else 
-		if (ppm > 1000) { airq = 3; } // Fair
+		if (ppm > 800) { airq = 3; } // Fair
 		else 
-		if (ppm > 800) { airq = 2; } // Good
+		if (ppm > 600) { airq = 2; } // Good
 		else 
 		if (ppm > 400) { airq = 1; } // Excellent
 		else 
