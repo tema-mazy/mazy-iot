@@ -1,0 +1,20 @@
+{
+  "idf.espIdfPath": "/Users/mazy/esp/v6.0/esp-idf",
+  "idf.toolsPath": "/Users/mazy/.espressif",
+  "idf.pythonInstallPath": "/opt/local/bin/python3",
+  "idf.flashType": "UART",
+  "idf.port": "/dev/tty.usbmodem2101",
+  "idf.monitorPort": "/dev/tty.usbmodem2101",
+  "idf.openOcdConfigs": [
+    "board/esp32c3-builtin.cfg"
+  ],
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32c3"
+  },
+  "clangd.path": "/Users/mazy/.espressif/tools/esp-clang/esp-20.1.1_20250829/esp-clang/bin/clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=/Users/mazy/.espressif/tools/riscv32-esp-elf/esp-15.2.0_20250929/riscv32-esp-elf/bin/riscv32-esp-elf-gcc",
+    "--compile-commands-dir=/Users/mazy/Dev/mazy-iot/esp32/test/speed_controller/build"
+  ]
+}
