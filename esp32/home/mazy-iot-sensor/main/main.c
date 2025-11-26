@@ -30,14 +30,18 @@
 #include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/queue.h>
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
+#include <esp_http_server.h>
 #include <math.h> // Include for fabs
 #include <string.h>
 #include <esp_mac.h>
-#include <driver/i2c.h>
 #include <driver/uart.h>
 #include <driver/gpio.h>
+#include <driver/i2c_master.h>
+#include "esp_intr_alloc.h"
+#include "freertos/semphr.h"
 
 #define UART_NUM UART_NUM_1
 #define TXD_PIN CONFIG_UART_TX
@@ -51,13 +55,20 @@
 #define I2C_MASTER_FREQ_HZ          100000               /*!< I2C master clock frequency */
 #define SHT21_SENSOR_ADDR    0x40   
 
+static i2c_master_bus_handle_t i2c_bus = NULL;
+static i2c_master_dev_handle_t sht21_dev = NULL;
+
+static portMUX_TYPE spinlock = portMUX_INITIALIZER_UNLOCKED;
+
+#define BUTTON_GPIO GPIO_NUM_9
+
 // Define device characteristics
 #define ACCESSORY_NAME "MIOT THC Sensor"
 #define ACCESSORY_SN "SN000001"
 #define DEVICE_MANUFACTURER "Mazy's Wünderwafle"
 #define DEVICE_SERIAL "THC000001"
 #define DEVICE_MODEL "MIOT32/THC/v1"
-#define FW_VERSION "0.0.1"
+#define FW_VERSION "25.11.26.3"
 
 char ssid[40] = "MIoT32/THC " ;
 char ssn[20] = "000000000000" ;
@@ -69,9 +80,11 @@ uint8_t response[9];
 const uint8_t cmd_h = 0xF5; // Humidity command
 const uint8_t cmd_t = 0xF3; // Temp command
 
-const int periodic_interval = 30;
+const int periodic_interval = 60;
 const int ALERT = 2000;
 
+// Queue to send button events from ISR to task
+static QueueHandle_t gpio_evt_queue = NULL;
 
 #define CHECK_ERROR(x) do {                          \
                 esp_err_t __err_rc = (x);            \
@@ -87,6 +100,7 @@ void handle_error(esp_err_t err) {
     case ESP_ERR_WIFI_CONN:
         ESP_LOGI("INFORMATION", "Restarting WiFi...");
         esp_wifi_stop();
+        vTaskDelay(pdMS_TO_TICKS(1000));
         esp_wifi_start();
         break;
     default:
@@ -96,14 +110,40 @@ void handle_error(esp_err_t err) {
     }
 }
 
+static void IRAM_ATTR gpio_isr_handler(void* arg) {
+    uint32_t gpio_num = (uint32_t)arg;
+    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+}
+
+
 static void on_wifi_ready();
 
 static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
     if (event_base == WIFI_EVENT) {
-        if (event_id == WIFI_EVENT_STA_START || event_id == WIFI_EVENT_STA_DISCONNECTED) {
-            ESP_LOGI("WiFi", "Connecting ...");
-            esp_wifi_connect();
+        switch(event_id) {
+            case WIFI_EVENT_STA_START:
+                ESP_LOGI("WiFI", "WiFi started");
+                esp_wifi_connect();
+                break;
+            case WIFI_EVENT_STA_CONNECTED:
+                ESP_LOGI("WiFi", "WiFi connected");
+                break;
+            case WIFI_EVENT_STA_DISCONNECTED:
+                wifi_event_sta_disconnected_t* disconnected = (wifi_event_sta_disconnected_t*) event_data;
+                ESP_LOGE("WiFi", "WiFi disconnected, reason: %d", disconnected->reason);                
+                // Handle reconnection or error recovery here
+                esp_wifi_stop();
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                esp_wifi_start();
+                break;
+            case WIFI_EVENT_STA_STOP:
+                ESP_LOGI("WiFi", "WiFi stopped");
+                esp_wifi_start();
+                break;
+            default:
+                break;
         }
+    
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ESP_LOGI("WiFi", "WiFi connected, IP obtained");
         on_wifi_ready();
@@ -115,7 +155,6 @@ static void wifi_init() {
     CHECK_ERROR(esp_event_loop_create_default());
     esp_netif_t *netif = esp_netif_create_default_wifi_sta();
 
-
     ESP_ERROR_CHECK(esp_netif_set_hostname(netif, ssid));
     
     CHECK_ERROR(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
@@ -124,6 +163,8 @@ static void wifi_init() {
     wifi_init_config_t wifi_init_config = WIFI_INIT_CONFIG_DEFAULT();
     CHECK_ERROR(esp_wifi_init(&wifi_init_config));
     CHECK_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+
+    ESP_LOGI("WiFi", "Connecting to AP: %s", CONFIG_ESP_WIFI_SSID);
 
     wifi_config_t wifi_config = {
         .sta = {
@@ -196,116 +237,138 @@ homekit_characteristic_t cha_co2_alert  = HOMEKIT_CHARACTERISTIC_(CARBON_DIOXIDE
 homekit_characteristic_t cha_air  = HOMEKIT_CHARACTERISTIC_(AIR_QUALITY, 0);
 
 void i2c_init() {
-    // Initialize I2C
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = I2C_MASTER_SDA_IO,
+    i2c_master_bus_config_t bus_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = I2C_NUM_0,
         .scl_io_num = I2C_MASTER_SCL_IO,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ,
+        .sda_io_num = I2C_MASTER_SDA_IO,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
     };
-    i2c_param_config(I2C_MASTER_NUM, &conf);
-    i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
+    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &i2c_bus));
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = SHT21_SENSOR_ADDR,
+        .scl_speed_hz = I2C_MASTER_FREQ_HZ,
+    };
+
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus, &dev_cfg, &sht21_dev));
+    
     ESP_LOGI("I2C", "Initialized.");
 }
 
 
-
-void th_sensor_task(void *pvParameters) {
-    uint8_t data[3];
-
-    uint16_t raw_humidity = 0;
-    uint16_t raw_temperature = 0;
-    
-    float temperature = 0 , humidity = 0 ;
-    
-    int elapsed_time = 0;
-
-    while (1) {
-            if (elapsed_time >= periodic_interval) {
-               i2c_master_write_to_device(I2C_MASTER_NUM, SHT21_SENSOR_ADDR, &cmd_h, 1, pdMS_TO_TICKS(1000));
-               vTaskDelay(pdMS_TO_TICKS(50));
-               i2c_master_read_from_device(I2C_MASTER_NUM, SHT21_SENSOR_ADDR, data, 3, pdMS_TO_TICKS(1000));
-               raw_humidity = (data[0] << 8) | (data[1] & 0xFC);
-               humidity = -6.0 + 125.0 * (raw_humidity / 65536.0);
-
-               i2c_master_write_to_device(I2C_MASTER_NUM, SHT21_SENSOR_ADDR, &cmd_t, 1, pdMS_TO_TICKS(1000));
-               vTaskDelay(pdMS_TO_TICKS(50));
-               i2c_master_read_from_device(I2C_MASTER_NUM, SHT21_SENSOR_ADDR, data, 3, pdMS_TO_TICKS(1000));
-
-               raw_temperature = (data[0] << 8) | (data[1] & 0xFC);
-               temperature = -2.2 + -46.85 + 175.72 * (raw_temperature / 65536.0);
-
-               cha_temperature.value.float_value = temperature;
-               cha_humidity.value.float_value = humidity;
-                
-               homekit_characteristic_notify(&cha_temperature, HOMEKIT_FLOAT(temperature));
-               homekit_characteristic_notify(&cha_humidity, HOMEKIT_FLOAT(humidity));
-
-               ESP_LOGI("INFORMATION", "Humidity: %.1f%%, Temp: %.1f°C", humidity, temperature);
-
-               elapsed_time = 0;
-            }
-
-        vTaskDelay(pdMS_TO_TICKS(10000));
-        elapsed_time += 10;
-    }
-}
 
 void co_sensor_task(void *pvParameters) {
     int ppm = 111;
     int elapsed_time = 0;
     int airq = 0;
     bool alerted = false;
+    bool notify_pending = false;
 
     while (1) {
-            if (elapsed_time >= periodic_interval) {
-    //    	portENTER_CRITICAL( &spinlock );
-    //    	portDISABLE_INTERRUPTS();
-                uart_write_bytes(UART_NUM, (const char *)co2_cmd, 9);
-                vTaskDelay(pdMS_TO_TICKS(500));
+        if (elapsed_time >= periodic_interval) {
+            uart_write_bytes(UART_NUM, (const char *)co2_cmd, 9);
+            vTaskDelay(pdMS_TO_TICKS(500));
    
-                int len = uart_read_bytes(UART_NUM, response, 9, pdMS_TO_TICKS(1000));
-                
-    //          portENABLE_INTERRUPTS();
-    //          portEXIT_CRITICAL( &spinlock );                
-                if (len == 9 && response[0] == 0xFF && response[1] == 0x86) {
-                    int ppm_raw = (response[2] << 8) | response[3];
-                    ppm = (ppm_raw + ppm) / 2;
-                } else {
-            	    ESP_LOGE("CO2","UART Read error, resetting driver");
-                    co2_init();
-                }
-
-		if (ppm > 1300) { airq = 5; } // Poor
-		else 
-		if (ppm > 1000) { airq = 4; } // Inferior
-		else 
-		if (ppm > 800) { airq = 3; } // Fair
-		else 
-		if (ppm > 600) { airq = 2; } // Good
-		else 
-		if (ppm > 400) { airq = 1; } // Excellent
-		else 
-		{ airq = 0; } // Unknown
-		
-                cha_co2.value.float_value = ppm;
-                homekit_characteristic_notify(&cha_co2, cha_co2.value);
-                cha_air.value.int_value = airq;
-                homekit_characteristic_notify(&cha_air, cha_air.value);
-                alerted = ppm > ALERT;
-                cha_co2_alert.value.bool_value = alerted;
-                homekit_characteristic_notify(&cha_co2_alert, cha_co2_alert.value);
-
-
-                ESP_LOGI("INFORMATION", "CO2 %dppm, Alert: %d, AirQ: %d ", ppm, alerted, airq);
-
-                elapsed_time = 0;
+            int len = uart_read_bytes(UART_NUM, response, 9, pdMS_TO_TICKS(1000));
+            
+            if (len == 9 && response[0] == 0xFF && response[1] == 0x86) {
+                int ppm_raw = (response[2] << 8) | response[3];
+                ppm = (ppm_raw + ppm) / 2;
+                notify_pending = true;
+            } else {
+                ESP_LOGE("CO2", "UART Read error, resetting driver");
+                uart_flush_input(UART_NUM);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                co2_init();
             }
 
-        vTaskDelay(pdMS_TO_TICKS(10000));
-        elapsed_time += 10;
+            // Calculate air quality
+            if (ppm > 1300) { airq = 5; }
+            else if (ppm > 1000) { airq = 4; }
+            else if (ppm > 800) { airq = 3; }
+            else if (ppm > 600) { airq = 2; }
+            else if (ppm > 400) { airq = 1; }
+            else { airq = 0; }
+
+            // Batch HomeKit updates with critical section
+            portENTER_CRITICAL(&spinlock);
+            {
+                cha_co2.value.float_value = ppm;
+                cha_air.value.int_value = airq;
+                alerted = ppm > ALERT;
+                cha_co2_alert.value.bool_value = alerted;
+            }
+            portEXIT_CRITICAL(&spinlock);
+
+            // Single notification batch (not 3 separate calls)
+            if (notify_pending) {
+                homekit_characteristic_notify(&cha_co2, cha_co2.value);
+                vTaskDelay(pdMS_TO_TICKS(25));
+                homekit_characteristic_notify(&cha_air, cha_air.value);
+                vTaskDelay(pdMS_TO_TICKS(25));
+                homekit_characteristic_notify(&cha_co2_alert, cha_co2_alert.value);
+                notify_pending = false;
+            }
+
+            ESP_LOGI("INFORMATION", "CO2 %dppm, Alert: %d, AirQ: %d", ppm, alerted, airq);
+            elapsed_time = 0;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(60000));
+        elapsed_time += 60;
+    }
+}
+
+void th_sensor_task(void *pvParameters) {
+    uint8_t data[2];
+    uint16_t raw_temp, raw_humidity;
+    float temp = 20.0, humidity = 50.0;
+    int elapsed_time = 0;
+
+    while (1) {
+        if (elapsed_time >= periodic_interval) {
+            // Read temperature
+            uint8_t cmd = 0xF3;
+            i2c_master_transmit(sht21_dev, &cmd, 1, pdMS_TO_TICKS(1000));
+            vTaskDelay(pdMS_TO_TICKS(50));
+            if (i2c_master_receive(sht21_dev, data, 2, pdMS_TO_TICKS(1000)) != ESP_OK) {
+                ESP_LOGE("I2C", "Sensor T timeout - skipping read");
+                continue;
+            }            
+            
+            raw_temp = (data[0] << 8) | data[1];
+            temp = -46.85 + 175.72 * (raw_temp / 65536.0);
+
+            vTaskDelay(pdMS_TO_TICKS(50));
+
+            // Read humidity
+            cmd = 0xF5;
+            i2c_master_transmit(sht21_dev, &cmd, 1, pdMS_TO_TICKS(1000));
+            vTaskDelay(pdMS_TO_TICKS(50));
+            if (i2c_master_receive(sht21_dev, data, 2, pdMS_TO_TICKS(1000)) != ESP_OK) {
+                ESP_LOGE("I2C", "Sensor H timeout - skipping read");
+                continue;
+            }            
+            
+            raw_humidity = (data[0] << 8) | data[1];
+            humidity = -6.0 + 125.0 * (raw_humidity / 65536.0);
+
+            cha_temperature.value.float_value = temp;
+            homekit_characteristic_notify(&cha_temperature, cha_temperature.value);
+            vTaskDelay(pdMS_TO_TICKS(25));
+            
+            cha_humidity.value.float_value = humidity;
+            homekit_characteristic_notify(&cha_humidity, cha_humidity.value);
+
+            ESP_LOGI("INFORMATION", "Temp: %.2f°C, Humidity: %.2f%%", temp, humidity);
+            elapsed_time = 0;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(30000));
+        elapsed_time += 30;
     }
 }
 
@@ -374,16 +437,13 @@ void app_main(void) {
     ESP_LOGI("INFORMATION", "Initializing UART...");
     co2_init();
     vTaskDelay(pdMS_TO_TICKS(1000));
-
-
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW("WARNING", "NVS flash initialization failed, erasing...");
         CHECK_ERROR(nvs_flash_erase());
         ret = nvs_flash_init();
+        CHECK_ERROR(ret);
     }
-    CHECK_ERROR(ret);
-
 
 
     CHECK_ERROR(esp_efuse_mac_get_default(mac));

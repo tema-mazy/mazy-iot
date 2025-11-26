@@ -1,0 +1,26 @@
+{
+  "IOT-sensor": {
+    "build": {
+      "compileArgs": [],
+      "ninjaArgs": [],
+      "buildDirectoryPath": "/Users/mazy/Dev/mazy-iot/esp32/home/mazy-iot-sensor/build",
+      "sdkconfigDefaults": [],
+      "sdkconfigFilePath": "/Users/mazy/Dev/mazy-iot/esp32/home/mazy-iot-sensor/sdkconfig"
+    },
+    "env": {},
+    "idfTarget": "esp32c3",
+    "flashBaudRate": "",
+    "monitorBaudRate": "",
+    "openOCD": {
+      "debugLevel": -1,
+      "configs": [],
+      "args": []
+    },
+    "tasks": {
+      "preBuild": "",
+      "preFlash": "",
+      "postBuild": "",
+      "postFlash": ""
+    }
+  }
+}
