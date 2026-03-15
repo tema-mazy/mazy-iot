@@ -1,5 +1,5 @@
 {
-  "idf.espIdfPath": "/Users/mazy/esp/v6.0/esp-idf",
+  "idf.espIdfPath": "/Users/mazy/esp/5.5.1/esp-idf",
   "idf.toolsPath": "/Users/mazy/.espressif",
   "idf.pythonInstallPath": "/opt/local/bin/python3",
   "idf.flashType": "UART",
