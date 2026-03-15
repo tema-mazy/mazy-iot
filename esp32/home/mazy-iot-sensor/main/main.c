@@ -38,6 +38,7 @@
 #include <esp_http_server.h>
 #include <esp_log.h>
 #include <esp_mac.h>
+#include <esp_timer.h>
 #include <esp_wifi.h>
 #include <nvs_flash.h>
 
@@ -70,6 +71,7 @@ static i2c_master_bus_handle_t i2c_bus = NULL;
 static i2c_master_dev_handle_t sht21_dev = NULL;
 static bool homekit_initialized = false;
 static int s_retry_num = 0;
+static esp_timer_handle_t wifi_reconnect_timer = NULL;
 
 // FIX #9: Separate spinlock for HomeKit characteristic writes
 static portMUX_TYPE spinlock = portMUX_INITIALIZER_UNLOCKED;
@@ -82,7 +84,7 @@ static portMUX_TYPE spinlock = portMUX_INITIALIZER_UNLOCKED;
 #define DEVICE_MANUFACTURER "Mazy's Wünderwafle"
 #define DEVICE_SERIAL "THC000001"
 #define DEVICE_MODEL "MIOT32/THC/v1"
-#define FW_VERSION "26.03.15.1"
+#define FW_VERSION "26.03.15.3"
 
 char ssid[40] = "MIoT32/THC ";
 char ssn[20] = "000000000000";
@@ -128,17 +130,24 @@ static void IRAM_ATTR gpio_isr_handler(void *arg) {
 
 static void on_wifi_ready();
 
-// FIX #4: WiFi reconnect handled without blocking the event loop
+// Timer callback: fires on a FreeRTOS timer task — safe to call
+// esp_wifi_connect()
+static void wifi_reconnect_cb(void *arg) {
+  ESP_LOGI("WiFi", "Reconnect timer fired, calling esp_wifi_connect()");
+  esp_wifi_connect();
+}
+
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT) {
     switch (event_id) {
     case WIFI_EVENT_STA_START:
-      ESP_LOGI("WiFI", "WiFi started");
+      ESP_LOGI("WiFi", "WiFi started");
       esp_wifi_connect();
       break;
     case WIFI_EVENT_STA_CONNECTED:
       ESP_LOGI("WiFi", "WiFi connected");
+      esp_timer_stop(wifi_reconnect_timer); // cancel any pending reconnect
       break;
     case WIFI_EVENT_STA_DISCONNECTED: {
       wifi_event_sta_disconnected_t *disconnected =
@@ -147,24 +156,28 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 
       s_retry_num++;
       if (s_retry_num < 5) {
-        // FIX #4: Removed vTaskDelay() — do NOT block the event loop.
-        // The WiFi driver manages its own retry backoff internally.
-        ESP_LOGI("WiFi", "Retrying to connect to the AP (Attempt %d)",
+        // Schedule a delayed reconnect via one-shot timer (2 s backoff).
+        // This avoids both blocking the event loop with vTaskDelay and the
+        // AUTH_EXPIRE storms caused by hammering the AP with back-to-back
+        // auth attempts.
+        ESP_LOGI("WiFi", "Scheduling reconnect attempt %d in 2 s...",
                  s_retry_num);
-        esp_wifi_connect();
+        esp_timer_start_once(wifi_reconnect_timer, 2000000); // 2 s in µs
       } else {
-        ESP_LOGE("WiFi", "Failed to connect to the AP, restarting WiFi driver");
+        ESP_LOGE("WiFi", "Max retries reached — restarting WiFi driver");
         s_retry_num = 0;
-        // FIX #4: Removed vTaskDelay() before esp_wifi_start().
-        // esp_wifi_stop() posts an async stop event; esp_wifi_start()
-        // is safe to call immediately after.
+        // Only call esp_wifi_stop() here. WIFI_EVENT_STA_STOP will fire
+        // asynchronously and restart the driver, avoiding the double-start
+        // that occurs when esp_wifi_start() is also called here directly.
         esp_wifi_stop();
-        esp_wifi_start();
       }
       break;
     }
     case WIFI_EVENT_STA_STOP:
-      ESP_LOGI("WiFi", "WiFi stopped");
+      // Triggered both by deliberate stop (max-retry reset above) and by
+      // other stop paths. Restarting here is the single, canonical restart
+      // point so there is never a double-start.
+      ESP_LOGI("WiFi", "WiFi stopped — restarting driver");
       esp_wifi_start();
       break;
     default:
@@ -179,6 +192,13 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 }
 
 static void wifi_init() {
+  // Create the one-shot reconnect timer (not started yet)
+  esp_timer_create_args_t timer_args = {
+      .callback = wifi_reconnect_cb,
+      .name = "wifi_reconnect",
+  };
+  ESP_ERROR_CHECK(esp_timer_create(&timer_args, &wifi_reconnect_timer));
+
   CHECK_ERROR(esp_netif_init());
   CHECK_ERROR(esp_event_loop_create_default());
   esp_netif_t *netif = esp_netif_create_default_wifi_sta();
@@ -402,8 +422,9 @@ void th_sensor_task(void *pvParameters) {
     esp_err_t err =
         i2c_master_transmit(sht21_dev, &cmd, 1, pdMS_TO_TICKS(1000));
     if (err != ESP_OK) {
-      ESP_LOGE("I2C", "Sensor T transmit error: %s", esp_err_to_name(err));
-      // FIX #1: No 'continue' here — add a real delay before next attempt
+      ESP_LOGE("I2C", "Sensor T transmit error: %s — recovering bus",
+               esp_err_to_name(err));
+      i2c_master_bus_reset(i2c_bus); // clock out any stuck SDA state
       vTaskDelay(pdMS_TO_TICKS(periodic_interval * 1000));
       continue;
     }
@@ -412,8 +433,9 @@ void th_sensor_task(void *pvParameters) {
 
     err = i2c_master_receive(sht21_dev, data, 2, pdMS_TO_TICKS(1000));
     if (err != ESP_OK) {
-      ESP_LOGE("I2C", "Sensor T receive error: %s", esp_err_to_name(err));
-      // FIX #1: Proper delay prevents busy-loop on persistent sensor fault
+      ESP_LOGE("I2C", "Sensor T receive error: %s — recovering bus",
+               esp_err_to_name(err));
+      i2c_master_bus_reset(i2c_bus);
       vTaskDelay(pdMS_TO_TICKS(periodic_interval * 1000));
       continue;
     }
@@ -425,7 +447,9 @@ void th_sensor_task(void *pvParameters) {
     cmd = 0xF5;
     err = i2c_master_transmit(sht21_dev, &cmd, 1, pdMS_TO_TICKS(1000));
     if (err != ESP_OK) {
-      ESP_LOGE("I2C", "Sensor H transmit error: %s", esp_err_to_name(err));
+      ESP_LOGE("I2C", "Sensor H transmit error: %s — recovering bus",
+               esp_err_to_name(err));
+      i2c_master_bus_reset(i2c_bus);
       vTaskDelay(pdMS_TO_TICKS(periodic_interval * 1000));
       continue;
     }
@@ -434,7 +458,9 @@ void th_sensor_task(void *pvParameters) {
 
     err = i2c_master_receive(sht21_dev, data, 2, pdMS_TO_TICKS(1000));
     if (err != ESP_OK) {
-      ESP_LOGE("I2C", "Sensor H receive error: %s", esp_err_to_name(err));
+      ESP_LOGE("I2C", "Sensor H receive error: %s — recovering bus",
+               esp_err_to_name(err));
+      i2c_master_bus_reset(i2c_bus);
       vTaskDelay(pdMS_TO_TICKS(periodic_interval * 1000));
       continue;
     }
