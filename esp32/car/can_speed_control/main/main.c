@@ -127,11 +127,13 @@ static void wifi_init_ap(void)
     wifi_config_t cfg = { 0 };
     strlcpy((char *)cfg.ap.ssid,     "Swift",            sizeof(cfg.ap.ssid));
     strlcpy((char *)cfg.ap.password, CONFIG_AP_PASSWORD, sizeof(cfg.ap.password));
-    cfg.ap.ssid_len       = 5;
-    cfg.ap.channel        = 6;
-    cfg.ap.max_connection = 4;
-    cfg.ap.authmode       = strlen(CONFIG_AP_PASSWORD) >= 8
-                            ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    cfg.ap.ssid_len         = 5;
+    cfg.ap.channel          = 6;
+    cfg.ap.max_connection   = 4;
+    cfg.ap.authmode         = strlen(CONFIG_AP_PASSWORD) >= 8
+                              ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    cfg.ap.pmf_cfg.capable  = true;   // iOS/macOS require PMF-capable AP for WPA2
+    cfg.ap.pmf_cfg.required = false;  // don't mandate PMF so non-Apple clients still work
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
