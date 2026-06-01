@@ -1,0 +1,10 @@
+menu "CAN Speed Config"
+
+config AP_PASSWORD
+    string "WiFi AP password"
+    default "swift1234"
+    help
+        Password for the "Swift" WiFi access point (min 8 chars for WPA2).
+        Leave empty for an open (no-password) network.
+
+endmenu
