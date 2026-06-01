@@ -135,6 +135,11 @@ static void wifi_init_ap(void)
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
+    /* Force 11b/g — prevents AMPDU/BA negotiation that causes ADDBA/DELBA storms */
+    ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G));
+    /* Suppress noisy driver logs — keep only errors */
+    esp_log_level_set("wifi", ESP_LOG_ERROR);
+    esp_log_level_set("esp_netif_lwip", ESP_LOG_WARN);
     ESP_LOGI(TAG, "AP started — SSID: Swift  IP: 192.168.4.1");
 }
 
