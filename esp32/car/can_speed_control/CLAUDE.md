@@ -72,8 +72,8 @@ Hysteresis band prevents relay chatter:
 | GPIO | Function |
 |------|----------|
 | 0    | SSR relay control (active-low) |
-| 1    | CAN TXD → SN65HVD230 |
-| 3    | CAN RXD ← SN65HVD230 |
+| 20   | CAN TXD → SN65HVD230 |
+| 21   | CAN RXD ← SN65HVD230 |
 | 8    | Built-in LED (mirrors relay state) |
 
 ## Key Constants to Tune

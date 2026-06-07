@@ -17,8 +17,8 @@ static const char *TAG = "CAN_SPEED";
 // ── GPIO / CAN constants ─────────────────────────────────────────────────────
 #define RELAY_GPIO          GPIO_NUM_0
 #define LED_GPIO            GPIO_NUM_8
-#define CAN_TXD_GPIO        GPIO_NUM_1
-#define CAN_RXD_GPIO        GPIO_NUM_3
+#define CAN_TXD_GPIO        GPIO_NUM_20
+#define CAN_RXD_GPIO        GPIO_NUM_21
 
 #define SPEED_OFF_KMH       10
 #define SPEED_ON_KMH        8
@@ -58,16 +58,26 @@ static int log_intercept(const char *fmt, va_list args)
 }
 
 // ── Relay ────────────────────────────────────────────────────────────────────
-static bool relay_active = false;
+static bool relay_active = true;
 
 static void relay_set(bool on)
 {
     if (on == relay_active) return;
     relay_active = on;
-    gpio_set_level(RELAY_GPIO, on ? 0 : 1);
-    gpio_set_level(LED_GPIO,   on ? 1 : 0);
+    gpio_set_level(RELAY_GPIO, on ? 1 : 0);
+    gpio_set_level(LED_GPIO,   on ? 0 : 1);  // active-low: 0 = ON
     ESP_LOGI(TAG, "Relay %s — parking sensors %s",
              on ? "ON " : "OFF", on ? "ENABLED" : "DISABLED");
+}
+
+static void relay_boot_blink(void)
+{
+    for (int i = 0; i < 2; i++) {
+        gpio_set_level(RELAY_GPIO, 0); gpio_set_level(LED_GPIO, 1);  // relay OFF, LED OFF
+        vTaskDelay(pdMS_TO_TICKS(500));
+        gpio_set_level(RELAY_GPIO, 1); gpio_set_level(LED_GPIO, 0);  // relay ON, LED ON
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
 }
 
 static void gpio_init(void)
@@ -81,7 +91,7 @@ static void gpio_init(void)
     };
     ESP_ERROR_CHECK(gpio_config(&cfg));
     gpio_set_level(RELAY_GPIO, 0);  // SSR ON = sensors enabled (safe default)
-    gpio_set_level(LED_GPIO,   1);
+    gpio_set_level(LED_GPIO,   0);  // active-low: 0 = LED ON
 }
 
 // ── CAN ──────────────────────────────────────────────────────────────────────
@@ -244,6 +254,7 @@ void app_main(void)
     s_orig_vprintf = esp_log_set_vprintf(log_intercept);
 
     gpio_init();
+    relay_boot_blink();
     relay_set(true);  // sensors on until speed is known
     can_init();
     wifi_init_ap();

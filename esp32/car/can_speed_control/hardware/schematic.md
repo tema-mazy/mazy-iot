@@ -42,8 +42,8 @@ Car GND ────────────────────────
 
 ```
                           ┌─────────────────────┐
-  ESP32-C3 GPIO1 (TX) ───►│ TXD             CANH ├───── OBD-II pin 6  (CAN-H)
-  ESP32-C3 GPIO3 (RX) ◄───│ RXD             CANL ├───── OBD-II pin 14 (CAN-L)
+  ESP32-C3 GPI20 (TX) ───►│ TXD             CANH ├───── OBD-II pin 6  (CAN-H)
+  ESP32-C3 GPI21 (RX) ◄───│ RXD             CANL ├───── OBD-II pin 14 (CAN-L)
                   3.3 V ──│ VCC               Rs  │──── GND  (Rs=GND → normal drive)
                    GND ───│ GND                   │
                           └─────────────────────┘
@@ -82,7 +82,7 @@ Car +12 V brake wire
           │         ┌──────────────────────────────┐
           └─────────┤ OUT+                          │
                     │        SSR (opto-isolated)    │
-           GND ─────┤ OUT−        DC–DC             ├──── Parking sensor "brake in" wire
+ PARKING_BRAKE_IN ─────┤ OUT−        DC–DC             ├──── Parking sensor "brake in" wire
                     │                               │
   ESP32 GPIO0 ──R2──┤ IN+                           │
         330 Ω       │                               │
