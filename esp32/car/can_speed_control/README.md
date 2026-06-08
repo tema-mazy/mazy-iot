@@ -47,8 +47,15 @@ All firmware is in `main/main.c` — single-file, single-task (no RTOS tasks spa
 
 ### Speed acquisition — dual-mode with automatic fallback
 
-1. **Broadcast mode (primary):** Listens for CAN ID `0x0AA` (Swift AZ native broadcast). Bytes `[1..2]` encode speed as `(b[1] << 8 | b[2]) / 100` km/h at ~10 ms cadence.
-2. **OBD-II fallback:** If no broadcast seen for `BROADCAST_TIMEOUT_US` (2 s), sends an OBD-II Mode 01 PID 0x0D request to `0x7DF` and reads the response from `0x7E0–0x7EF`.
+1. **Broadcast mode (primary):** Listens for CAN ID `0x1809` (Swift AZ native broadcast).
+    •	Speed bytes:  data[0] and  data[1]  as a 16‑bit value (big‑endian)
+    •	Scaling:  speed_kmh = raw * 0.05 
+    
+  if (msg->identifier == CAN_ID_SWIFT_SPEED && msg->data_length_code >= 2) {
+    uint16_t raw = ((uint16_t)msg->data[0] << 8) | msg->data[1];
+    return raw / 20;
+  }
+
 
 ### Relay / hysteresis logic
 

@@ -119,8 +119,8 @@ Built-in LED on GPIO8 (ESP32-C3 SuperMini):
   CAR SIDE                                              ESP32-C3 SuperMini
   ──────────────────────────────────────────────────────────────────────────────
 
-  OBD-II pin 6  (CAN-H) ────────────────── SN65HVD230 ─── GPIO1 (TX)
-  OBD-II pin 14 (CAN-L) ──────────────────  CANH/CANL  ─── GPIO3 (RX)
+  OBD-II pin 6  (CAN-H) ────────────────── SN65HVD230 ─── GPIO20 (TX)
+  OBD-II pin 14 (CAN-L) ──────────────────  CANH/CANL  ─── GPIO21 (RX)
                                               3.3V/GND ─── 3.3V / GND
 
   OBD-II pin 4  (GND)   ────────────────────────────────── GND
