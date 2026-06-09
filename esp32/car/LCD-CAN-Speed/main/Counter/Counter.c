@@ -1,7 +1,7 @@
 #include "Counter.h"
 
-uint16_t CPS = 0; // current speed km/h (displayed on LCD)
-bool can_connected = true;
+volatile uint16_t CPS = 0; // current speed km/h (displayed on LCD)
+volatile bool can_connected = true;
 
 static const char *TAG = "CAN";
 
@@ -39,7 +39,7 @@ static void receiver_task(void *arg) {
 
 void Counter_Init(void) {
   twai_general_config_t g_config =
-      TWAI_GENERAL_CONFIG_DEFAULT(CAN_TXD_GPIO, CAN_RXD_GPIO, TWAI_MODE_NORMAL);
+      TWAI_GENERAL_CONFIG_DEFAULT(CAN_TXD_GPIO, CAN_RXD_GPIO, TWAI_MODE_LISTEN_ONLY);
   twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
   twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 

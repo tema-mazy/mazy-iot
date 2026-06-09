@@ -9,6 +9,6 @@
 #include "RGB.h"
 #include <stdbool.h>
 
-extern uint16_t CPS;
-extern bool can_connected;
+extern volatile uint16_t CPS;
+extern volatile bool can_connected;
 void Counter_Init(void);
