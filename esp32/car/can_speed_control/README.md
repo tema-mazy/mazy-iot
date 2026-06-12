@@ -1,103 +1,47 @@
-# CLAUDE.md
+# can_speed_control
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Speed-gated parking sensor controller for a **Suzuki Swift V**. An ESP32-C3
+listens to the car's CAN bus (500 kbps, listen-only), decodes vehicle speed from
+the ABS wheel-speed broadcast and drives a solid-state relay that enables the
+parking sensors only at low speed:
 
-## Project Overview
+- speed > 10 km/h → relay OFF → parking sensors disabled
+- speed < 8 km/h → relay ON → parking sensors enabled
+- 8–10 km/h → hysteresis dead-band, hold current state
 
-ESP32-C3 firmware (ESP-IDF) for a Suzuki Swift AZ parking sensor speed gate. Reads vehicle speed from the CAN bus and controls a solid-state relay that enables/disables parking sensors based on speed thresholds.
+## Hardware
 
-- **Target chip:** ESP32-C3 SuperMini
-- **Framework:** ESP-IDF ≥ 5.0 (CMake build, not Arduino/PlatformIO)
-- **CAN transceiver:** SN65HVD230 via TWAI driver
+- **MCU:** ESP32-C3 SuperMini
+- **CAN transceiver:** SN65HVD230 — TX GPIO20, RX GPIO21, tapped at the OBD-II
+  port (pin 6 = CAN-H, pin 14 = CAN-L)
+- **SSR:** DC-DC opto-isolated relay on GPIO0, in series with the parking
+  sensor controller's brake-signal input (never the main brake light wire)
+- **LED:** onboard GPIO8 (active-low), mirrors relay state
+- Full wiring in [`hardware/schematic.md`](hardware/schematic.md)
 
-## Build & Flash
+## CAN decoding (Suzuki Swift V)
+
+Derived from a real drive log (`../LCD-CAN-logger/SuzukiSwiftV-CAN-Log.txt`):
+
+| ID | Content |
+|----|---------|
+| `0x1B8` | **ABS wheel speeds** — four big-endian `uint16` (bytes 0-1, 2-3, 4-5, 6-7), one per wheel. Unit: 0.01 m/s per count → `km/h = raw * 0.036`. Value `0x3FFF` = "ABS not ready" (briefly at startup), ignored. |
+| `0x1E8` | Vehicle speed (bytes 0-1 big-endian) ≈ `km/h * 100` — alternative source. |
+| `0x180` | Not speed — byte 3 follows engine load/throttle, changes discretely. |
+
+The firmware uses `0x1B8`, first wheel (bytes 0-1).
+
+## Safety defaults
+
+- On power-up the relay is ON (sensors enabled) until a valid speed arrives.
+- If no valid speed frame for 5 s, the relay is forced ON (fail-safe).
+- Two slow boot blinks indicate startup.
+
+## Build & flash
+
+ESP-IDF project (target `esp32c3`), `IDF_PATH` must be set:
 
 ```sh
-# Source ESP-IDF environment first (required every terminal session)
-. $IDF_PATH/export.sh
-
-# Configure (only needed once or when changing sdkconfig)
-idf.py menuconfig
-
-# Build
-idf.py build
-
-# Flash (adjust PORT as needed)
-idf.py -p /dev/ttyUSB0 flash
-
-# Monitor serial output
-idf.py -p /dev/ttyUSB0 monitor
-
-# Flash + monitor combined
-idf.py -p /dev/ttyUSB0 flash monitor
+./build.sh           # idf.py build
+./flash.sh [port]    # flash + monitor
 ```
-
-Manual flash command (from file `1`):
-```sh
-python -m esptool --chip esp32c3 -b 460800 --before default_reset --after hard_reset \
-  write_flash --flash_mode dio --flash_size 4MB --flash_freq 80m \
-  0x0 build/bootloader/bootloader.bin \
-  0x8000 build/partition_table/partition-table.bin \
-  0x10000 build/canspeed.bin
-```
-
-## Architecture
-
-All firmware is in `main/main.c` — single-file, single-task (no RTOS tasks spawned beyond `app_main`).
-
-### Speed acquisition — dual-mode with automatic fallback
-
-1. **Broadcast mode (primary):** Listens for CAN ID `0x1809` (Swift AZ native broadcast).
-    •	Speed bytes:  data[0] and  data[1]  as a 16‑bit value (big‑endian)
-    •	Scaling:  speed_kmh = raw * 0.05 
-    
-  if (msg->identifier == CAN_ID_SWIFT_SPEED && msg->data_length_code >= 2) {
-    uint16_t raw = ((uint16_t)msg->data[0] << 8) | msg->data[1];
-    return raw / 20;
-  }
-
-
-### Relay / hysteresis logic
-
-The SSR controls the +12 V brake signal line to the parking sensor controller:
-- `relay ON` (GPIO0 LOW, SSR closed) → brake signal forwarded → sensors **enabled**
-- `relay OFF` (GPIO0 HIGH, SSR open) → brake signal blocked → sensors **disabled**
-
-Hysteresis band prevents relay chatter:
-- Speed > `SPEED_OFF_KMH` (10) → relay OFF
-- Speed < `SPEED_ON_KMH` (8)  → relay ON
-- 8–10 km/h → hold current state
-
-### Safety defaults
-
-- On power-up: relay ON (sensors enabled) until a valid speed is received.
-- If no valid speed data for `SPEED_STALE_US` (5 s): relay forced ON (fail-safe).
-- After 5 consecutive CAN TX failures or OBD RX timeouts: `can_recover()` restarts the TWAI driver.
-
-## GPIO Pin Map
-
-| GPIO | Function |
-|------|----------|
-| 0    | SSR relay control (active-low) |
-| 20   | CAN TXD → SN65HVD230 |
-| 21   | CAN RXD ← SN65HVD230 |
-| 8    | Built-in LED (mirrors relay state) |
-
-## Key Constants to Tune
-
-All in `main/main.c` at the top:
-
-| Constant | Default | Purpose |
-|----------|---------|---------|
-| `SPEED_OFF_KMH` | 10 | Upper hysteresis threshold |
-| `SPEED_ON_KMH` | 8 | Lower hysteresis threshold |
-| `CAN_ID_SWIFT_SPEED` | `0x0AA` | Native broadcast CAN ID |
-| `BROADCAST_TIMEOUT_US` | 2 000 000 | µs before OBD fallback |
-| `SPEED_STALE_US` | 5 000 000 | µs before fail-safe relay-ON |
-
-## Hardware Notes
-
-See `hardware/schematic.md` for full wiring. Key points:
-- CAN is tapped at OBD-II port (pin 6 = CAN-H, pin 14 = CAN-L) — do **not** add 120 Ω termination resistor unless bus is unterminated (check: ~60 Ω between CANH/CANL with ignition off = OK).
-- SSR must be wired **in series** on the parking sensor controller's brake input wire only — never cut the main brake light wire.
-- `platformio.ini` targets an ESP8285 (legacy/unrelated) — ignore it; the active build system is ESP-IDF/CMake.

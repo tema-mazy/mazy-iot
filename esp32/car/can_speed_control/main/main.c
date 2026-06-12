@@ -27,7 +27,8 @@ static const char *TAG = "CAN_SPEED";
 
 #define SPEED_OFF_KMH 10
 #define SPEED_ON_KMH 8
-#define CAN_ID_SWIFT_SPEED 0x180
+#define CAN_ID_SWIFT_SPEED 0x1B8   // ABS wheel speeds: 4x uint16 BE, 0.01 m/s per count
+#define WHEEL_SPEED_INVALID 0x3FFF // broadcast before ABS is ready
 #define SPEED_STALE_US (5000LL * 1000LL)
 
 // ── Log ring buffer (disabled) ───────────────────────────────────────────────
@@ -106,7 +107,9 @@ static int parse_broadcast(const twai_message_t *msg) {
 
   if (msg->identifier == CAN_ID_SWIFT_SPEED && msg->data_length_code >= 2) {
     uint16_t raw = ((uint16_t)msg->data[0] << 8) | msg->data[1];
-    return raw / 20;
+    if (raw == WHEEL_SPEED_INVALID)
+      return -1;
+    return (uint32_t)raw * 36 / 1000; // 0.01 m/s -> km/h
   }
 
   return -1;

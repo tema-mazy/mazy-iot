@@ -7,7 +7,8 @@ static const char *TAG = "CAN";
 
 #define CAN_TXD_GPIO GPIO_NUM_20
 #define CAN_RXD_GPIO GPIO_NUM_19
-#define CAN_ID_SWIFT_SPEED 0x180
+#define CAN_ID_SWIFT_SPEED 0x1B8   // ABS wheel speeds: 4x uint16 BE, 0.01 m/s per count
+#define WHEEL_SPEED_INVALID 0x3FFF // value broadcast before ABS is ready
 
 static void receiver_task(void *arg) {
   twai_message_t rx;
@@ -18,7 +19,9 @@ static void receiver_task(void *arg) {
     if (err == ESP_OK) {
       if (rx.identifier == CAN_ID_SWIFT_SPEED && rx.data_length_code >= 2) {
         uint16_t raw = ((uint16_t)rx.data[0] << 8) | rx.data[1];
-        CPS = raw / 20;
+        if (raw == WHEEL_SPEED_INVALID)
+          continue;
+        CPS = (uint32_t)raw * 36 / 1000; // 0.01 m/s -> km/h
         can_connected = true;
         last_rx_time = esp_timer_get_time();
         Set_RGB(0, 32, 0); // Green indicating active speed reception
