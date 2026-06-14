@@ -1,0 +1,374 @@
+<h1>Speed-Gated Parking Sensors on a Suzuki Swift V — Reading Speed Straight off the CAN Bus</h1>
+<blockquote>An ESP32-C3 quietly listens to the car's CAN bus, decodes vehicle speed from the
+ABS wheel-speed broadcast, and switches a relay that enables the aftermarket
+<strong>parking controller</strong> — which in turn drives the front sensors and the
+camera — only <strong>below 15 km/h</strong>. No splicing into the speedometer,
+no aftermarket speed pulse — just the bus the car already talks on.
+
+<img class="alignnone size-medium wp-image-3438" src="https://meow.kyiv.ua/wp-content/uploads/2026/06/canbus-esp32-500x358.jpg" alt="canbus-esp32" width="500" height="358" />
+
+🔗 <strong>Source &amp; schematics:</strong>
+<a href="https://github.com/tema-mazy/mazy-iot/tree/main/esp32/car/can_speed_control">github.com/tema-mazy/mazy-iot — esp32/car/can_speed_control</a></blockquote>
+<!--more-->
+<h2>The problem</h2>
+Aftermarket front parking sensors have one annoying habit: they beep at everything.
+Crawl up to a junction, sit behind a car at a light, edge through traffic — and the
+front sensors chirp at the bumper in front of you the whole time. They are only
+genuinely useful when you're <em>parking</em>, i.e. moving slowly.
+
+The fix most kits ship with is a manual button. I wanted it automatic:
+<strong>the parking controller — and therefore its front sensors and camera —
+enabled only when the car is moving slower than ~15 km/h, OFF otherwise.</strong>
+
+Note the division of labour: the aftermarket <strong>parking controller</strong>
+already owns the front sensors and the reversing camera. Our board doesn't touch them
+directly — it just gates the controller's enable line. That needs one input the kit
+doesn't have — vehicle speed — and one output: a switched 12 V line into the
+controller. The Swift already broadcasts speed on its high-speed CAN bus several times
+a second. So the whole project reduces to: (1) tap the CAN bus read-only, (2) decode
+speed, (3) drive a relay with hysteresis.
+
+Here's the full signal chain:
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.35; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;">                       ┌──────────────────────────────────────────────┐
+   OBD-II port         │                ESP32-C3                      │
+  ┌───────────┐        │                                              │
+  │ CAN-H (6) │───┐    │   ┌──────────┐  decode   ┌────────────┐      │
+  │ CAN-L(14) │───┤───►│──►│ TWAI/CAN │──0x1B8──► │ speed km/h │      │
+  └───────────┘   │    │   │ listen-  │           └─────┬──────┘      │
+   500 kbps HS-CAN│    │   │  only    │                 │             │
+                  │    │   └──────────┘          hysteresis gate      │
+       SN65HVD230 ┘    │                          (10 / 15 km/h)      │
+       transceiver     │                                │             │
+                       │                          GPIO0 ─┴─► SSR ─► parking
+                       └─────────────────────────────────  controller ─► front sensors + camera
+</pre>
+
+<hr />
+
+<h2>Step 1 — Sniffing the bus</h2>
+The CAN tap is just the two differential wires at the OBD-II socket — pin 6
+(CAN-H) and pin 14 (CAN-L) — through an SN65HVD230 transceiver into the
+ESP32-C3's TWAI controller. <strong>Listen-only</strong>, so the device is
+electrically invisible to the car (more on why that matters below).
+
+A first dump of everything on the bus, captured during a slow drive, looks like this:
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.35; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;">I (12810) CAN: ID:3D0 DLC:8  40 00 00 00 00 00 00 00
+I (12810) CAN: ID:3D6 DLC:8  00 00 00 00 00 00 F8 00
+I (12820) CAN: ID:3D4 DLC:8  04 00 00 00 8C 00 00 00
+I (12930) CAN: ID:3E8 DLC:8  01 25 03 70 00 00 00 00
+I (14370) CAN: ID:1B8 DLC:8  3F FF 3F FF 3F FF 3F FF
+...</pre>
+Dozens of IDs scroll by. The job is to find the one that tracks road speed.
+<h3>Finding the speed frame</h3>
+Two false leads are worth recording so nobody repeats them:
+<ul>
+  <li><strong><code>0x180</code></strong> <em>looks</em> speed-ish but byte 3 jumps
+in discrete steps — it follows engine load / throttle, not road speed.
+<strong>Do not use it.</strong></li>
+  <li><strong><code>0x1E8</code></strong> carries a speed-like value (bytes 0–1 ≈
+km/h × 100) and works as a backup source.</li>
+</ul>
+The winner is <strong><code>0x1B8</code> — the ABS wheel-speed broadcast.</strong>
+Watch what it does as the car starts rolling:
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.35; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;">I (14370) CAN: ID:1B8 DLC:8  3F FF 3F FF 3F FF 3F FF   ← ABS not ready yet
+I (14610) CAN: ID:1B8 DLC:8  00 00 00 00 00 00 00 00   ← stopped, all four wheels 0
+I (36740) CAN: ID:1B8 DLC:8  00 25 00 26 00 27 00 27   ← crawling forward
+I (37720) CAN: ID:1B8 DLC:8  00 1D 00 1D 00 1D 00 1D   ← slowing
+I (39240) CAN: ID:1B8 DLC:8  00 12 00 0F 00 11 00 10   ← slower still
+I (40030) CAN: ID:1B8 DLC:8  00 0B 00 00 00 00 00 00   ← nearly stopped</pre>
+The structure becomes obvious once you line up the bytes:
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.35; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;">   byte:  0  1   2  3   4  5   6  7
+          ┌─────┬─────┬─────┬─────┐
+   0x1B8: │00 25│00 26│00 27│00 27│
+          └──┬──┴──┬──┴──┬──┴──┬──┘
+          FL wheel │     │     └─ RR wheel
+                   │     └─ RL wheel
+                   └─ FR wheel
+          each = big-endian uint16, unit 0.01 m/s
+</pre>
+Four big-endian 16-bit values, one per wheel, all tracking together — exactly what
+you'd expect from an ABS controller. And the <code>3F FF</code> startup pattern is the
+classic "sensor not ready" sentinel (<code>0x3FFF</code>), broadcast for the first
+second or two before the wheel-speed sensors have a valid reading.
+<h3>The decode math</h3>
+The unit is <strong>0.01 m/s per count</strong>. To km/h:
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.35; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;">km/h = raw × 0.01 m/s × 3.6 = raw × 0.036</pre>
+In fixed-point integer (no floats on the hot path):
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.35; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;">km/h = raw × 36 / 1000</pre>
+Worked examples from the log above:
+<table style="border-collapse: collapse; width: 100%; margin: 1em 0;">
+<thead>
+<tr style="background: #f0f0f0;">
+<th style="border: 1px solid #ccc; padding: 6px 10px; text-align: left;">Frame bytes 0–1</th>
+<th style="border: 1px solid #ccc; padding: 6px 10px; text-align: left;">raw (dec)</th>
+<th style="border: 1px solid #ccc; padding: 6px 10px; text-align: left;">m/s</th>
+<th style="border: 1px solid #ccc; padding: 6px 10px; text-align: left;">km/h</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="border: 1px solid #ccc; padding: 6px 10px;"><code>00 25</code></td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">37</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">0.37</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">1.3</td>
+</tr>
+<tr>
+<td style="border: 1px solid #ccc; padding: 6px 10px;"><code>00 1D</code></td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">29</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">0.29</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">1.0</td>
+</tr>
+<tr>
+<td style="border: 1px solid #ccc; padding: 6px 10px;"><code>3F FF</code></td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">16383</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">—</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;"><em>invalid → ignore</em></td>
+</tr>
+<tr>
+<td style="border: 1px solid #ccc; padding: 6px 10px;"><code>01 A1</code></td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">417</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">4.17</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;"><strong>15.0</strong> ← the cutoff</td>
+</tr>
+</tbody>
+</table>
+So the 15 km/h threshold corresponds to roughly <code>raw = 0x01A1</code>. The
+crawl speeds in the log (1–2 km/h) are exactly the parking-lot regime where we
+<em>want</em> the sensors on.
+
+<hr />
+
+<h2>Step 2 — The decode in firmware</h2>
+The whole thing is a single ESP-IDF file, single task, no extra RTOS plumbing. The
+parser logs every frame (handy for field debugging) and returns a speed only for
+<code>0x1B8</code>:
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.4; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;"><code>#define CAN_ID_SWIFT_SPEED   0x1B8    // ABS wheel speeds, 4× uint16 BE, 0.01 m/s/count
+#define WHEEL_SPEED_INVALID  0x3FFF   // broadcast before ABS is ready
+
+static int parse_broadcast(const twai_message_t *msg) {
+  // ... log the raw frame: "CAN Rx: ID=0x1B8 DLC=8 data=[00 25 00 26 ...]" ...
+
+  if (msg-&gt;identifier == CAN_ID_SWIFT_SPEED &amp;&amp; msg-&gt;data_length_code &gt;= 2) {
+    uint16_t raw = ((uint16_t)msg-&gt;data[0] &lt;&lt; 8) | msg-&gt;data[1];  // big-endian, FL wheel
+    if (raw == WHEEL_SPEED_INVALID)
+      return -1;                       // ABS not ready → treat as no data
+    return (uint32_t)raw * 36 / 1000;  // 0.01 m/s → km/h
+  }
+  return -1;
+}</code></pre>
+A few deliberate choices here:
+<ul>
+  <li><strong>First wheel only</strong> (bytes 0–1). All four track within a count or
+two; one wheel is plenty for a 15 km/h gate and avoids averaging logic.</li>
+  <li><strong><code>0x3FFF</code> is filtered</strong>, so the startup garbage never
+reaches the relay logic.</li>
+  <li><strong>Return <code>-1</code> for "no speed"</strong>, which the main loop
+distinguishes from <code>0</code> km/h (genuinely stopped).</li>
+</ul>
+
+<hr />
+
+<h2>Step 3 — The relay gate (hysteresis)</h2>
+A naive <code>if (speed &gt; 15) off; else on;</code> would chatter the relay every
+time you hover right at 15 km/h. So the gate uses a <strong>dead-band</strong>:
+turn OFF only above 15, turn ON only below 10, and <em>hold</em> in between.
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.35; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;"> relay
+  ON │███████████████████████┐                       ┌██████████
+     │   sensors enabled     │  hold last state      │
+     │                       │ ◄─── dead-band ───►   │
+ OFF │                       └───────────────────────┘
+     └──────────────┬───────────────┬───────────────┬──────► speed
+                    0              10 km/h        15 km/h
+                                 SPEED_ON       SPEED_OFF
+</pre>
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.4; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;"><code>#define SPEED_OFF_KMH 15
+#define SPEED_ON_KMH  10
+
+static void update_relay(int speed_kmh) {
+  if (speed_kmh &gt; SPEED_OFF_KMH)
+    relay_set(false);                  // &gt; 15 → sensors OFF
+  else if (speed_kmh &lt; SPEED_ON_KMH)
+    relay_set(true);                   // &lt; 10 → sensors ON
+  // 10..15 km/h: hold current state (hysteresis dead-band)
+}</code></pre>
+<code>relay_set()</code> drives GPIO0 (the SSR input) and mirrors the state on the
+onboard LED, and only touches the pins when the state actually changes:
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.4; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;"><code>static void relay_set(bool on) {
+  if (on == relay_active) return;      // no-op if unchanged → no relay chatter
+  relay_active = on;
+  gpio_set_level(RELAY_GPIO, on ? 1 : 0);
+  gpio_set_level(LED_GPIO,   on ? 0 : 1);   // LED is active-low
+  ESP_LOGI(TAG, "Relay %s — parking sensors %s",
+           on ? "ON " : "OFF", on ? "ENABLED" : "DISABLED");
+}</code></pre>
+
+<hr />
+
+<h2>Step 4 — Fail-safe by default</h2>
+If the firmware crashes, the bus goes quiet, or the connector falls off, the
+<em>safe</em> behaviour is <strong>sensors ON</strong> — you'd rather have them beeping
+than silently dead while you reverse toward a wall. Two mechanisms enforce that:
+<ol>
+  <li><strong>Boot:</strong> relay is ON before the first valid speed frame ever arrives.</li>
+  <li><strong>Stale-data watchdog:</strong> if no valid <code>0x1B8</code> frame for
+5 seconds, force the relay back ON.</li>
+</ol>
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.4; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;"><code>#define SPEED_STALE_US (5000LL * 1000LL)   // 5 s
+
+while (1) {
+  int64_t now_us = esp_timer_get_time();
+
+  if (last_speed_us &gt; 0 &amp;&amp; (now_us - last_speed_us) &gt; SPEED_STALE_US) {
+    ESP_LOGW(TAG, "Speed data stale — enabling sensors (safe default)");
+    relay_set(true);
+    last_speed_us = 0;
+  }
+
+  twai_message_t rx;
+  if (twai_receive(&amp;rx, pdMS_TO_TICKS(15)) == ESP_OK) {
+    int s = parse_broadcast(&amp;rx);
+    if (s &gt;= 0) {
+      last_speed_us = now_us;
+      update_relay(s);
+    }
+  }
+}</code></pre>
+The state machine, end to end:
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.35; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;">        power on
+           │
+           ▼
+   ┌───────────────┐  valid speed &lt; 10        ┌───────────────┐
+   │ SENSORS ON    │ ◄─────────────────────── │ SENSORS OFF   │
+   │ (relay ON)    │                          │ (relay OFF)   │
+   │ - boot        │  valid speed &gt; 15        │               │
+   │ - speed&lt;10    │ ────────────────────────►│  speed&gt;15     │
+   │ - 5s no data  │                          │               │
+   └───────┬───────┘                          └───────┬───────┘
+           │            10–15 km/h: hold              │
+           └─────────────── dead-band ────────────────┘
+</pre>
+
+<hr />
+
+<h2>The hardware</h2>
+<h3>Block diagram</h3>
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.35; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;">  CAR SIDE                                         ESP32-C3 SuperMini
+  ──────────────────────────────────────────────────────────────────────────
+  OBD-II pin 6  (CAN-H) ──┐
+  OBD-II pin 14 (CAN-L) ──┤  SN65HVD230 ── GPIO20 (TX, kept recessive)
+                        │  transceiver ── GPIO21 (RX)
+                        │   3.3V / GND
+  OBD-II pin 4  (GND) ────────────────── GND
+  Fuse box IGN +12V ── F1(1A) ── LM2596 ── +5V ── 5V pin
+       (NOT OBD-II pin 16 — that's always-on battery)
+
+  Brake +12V wire ─────────────────────── SSR OUT+
+                                                SSR OUT− ── parking ctrl "brake in"
+                                                SSR IN+  ── R2(330Ω) ── GPIO0
+                                                SSR IN−  ── GND
+                                                GPIO8    ── onboard LED
+</pre>
+<h3>CAN interface</h3>
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.35; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;">                       ┌─────────────────────┐
+  GPIO20 (TX) ────────►│ TXD            CANH ├──── OBD-II pin 6  (CAN-H)
+  GPIO21 (RX) ◄────────│ RXD            CANL ├──── OBD-II pin 14 (CAN-L)
+        3.3 V ─────────│ VCC             Rs  │──── GND  (normal-drive mode)
+         GND ──────────│ GND                 │
+                       └─────────────────────┘
+                            │           │
+                          100 nF      120 Ω  ← only if this node is a bus endpoint
+                            │           │       (measure ~60 Ω CANH–CANL = already
+                           GND        CANL        terminated, leave it out)
+</pre>
+<h3>SSR — switching the parking-sensor enable line</h3>
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.35; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;">Car +12 V brake wire ──────┐          ┌──────────────────────────┐
+(from brake light switch)  └──────────┤ OUT+    SSR (opto        │
+                                      │         DC–DC            │
+ parking ctrl "brake in" ─────────────┤ OUT−                     │
+                                      │                          │
+        GPIO0 ── R2(330Ω) ────────────┤ IN+                      │
+                  GND ────────────────┤ IN−                      │
+                                      └──────────────────────────┘
+</pre>
+<h3>Bill of materials</h3>
+<table style="border-collapse: collapse; width: 100%; margin: 1em 0;">
+<thead>
+<tr style="background: #f0f0f0;">
+<th style="border: 1px solid #ccc; padding: 6px 10px; text-align: left;">Part</th>
+<th style="border: 1px solid #ccc; padding: 6px 10px; text-align: left;">Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">ESP32-C3 SuperMini</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">MCU + TWAI/CAN controller</td>
+</tr>
+<tr>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">SN65HVD230</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">3.3 V CAN transceiver</td>
+</tr>
+<tr>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">DC–DC opto SSR</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">switches the 12 V parking-sensor enable line</td>
+</tr>
+<tr>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">LM2596 / MP1584 buck</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">12 V → 5 V supply</td>
+</tr>
+<tr>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">330 Ω, 100 nF, 10 µF, 1 A fuse</td>
+<td style="border: 1px solid #ccc; padding: 6px 10px;">SSR current limit, decoupling, protection</td>
+</tr>
+</tbody>
+</table>
+
+<hr />
+
+<h2>Gotchas worth their own section</h2>
+These each cost real debugging time:
+
+<strong>1. Stay in <code>TWAI_MODE_LISTEN_ONLY</code>.</strong> In normal mode the
+TWAI controller transmits ACK bits for every frame on the bus. On a busy, already-ACKed
+car bus, any timing mismatch makes the TX error counter climb until the controller goes
+<strong>bus-off</strong>, resets, and repeats — a silent reset loop. Listen-only never
+transmits, so the device is invisible to the ECU. (Switch to normal mode <em>only</em>
+on the bench with a second node that can ACK.) The firmware logs the error counters
+every 2 s so you can catch this early:
+<pre style="overflow: auto; background: #1e1e1e; color: #e6e6e6; padding: 1em; border-radius: 6px; line-height: 1.4; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',monospace; font-size: 13px;"><code>twai_get_status_info(&amp;status);
+if (status.tx_error_counter &gt; 0 || status.state == TWAI_STATE_BUS_OFF)
+  ESP_LOGW(TAG, "CAN Status Error: state=%d, tx_err=%ld, ...", ...);</code></pre>
+<strong>2. Power from an ignition-switched fuse tap, not OBD-II pin 16.</strong> Pin
+16 is always-on battery — drawing from it parks a slow battery drain on your car. Use a
+fuse that only has 12 V with the ignition on.
+
+<strong>3. Don't add CAN termination blindly.</strong> The OBD-II port usually sits
+mid-bus, already terminated. Measure CANH–CANL with the ignition off:
+<strong>~60 Ω = correctly terminated, add nothing.</strong> ~120 Ω means one
+terminator is missing.
+
+<strong>4. Splice the SSR in series with the parking controller's brake-input wire
+only</strong> — never cut the main brake-light wire.
+
+<strong>5. <code>0x180</code> is not speed.</strong> It's throttle/load. We confirmed
+<code>0x1B8</code> against a real drive log; don't revert.
+
+<hr />
+
+<h2>Result</h2>
+A matchbox-sized board, tucked behind the dash, taps the OBD-II port read-only and
+does exactly one thing well: it enables the parking controller — and with it the front
+sensors and reversing camera — when you slow to a crawl, and cuts it the moment you're
+driving. No buttons, no false beeps in traffic, and if anything goes wrong it fails to
+the safe, controller-on state.
+
+🔗 Full source, firmware and schematics:
+<a href="https://github.com/tema-mazy/mazy-iot/tree/main/esp32/car/can_speed_control">github.com/tema-mazy/mazy-iot/esp32/car/can_speed_control</a>
+
+Total moving parts: one CAN ID, one line of decode math
+(<code>raw × 36 / 1000</code>), and a two-threshold hysteresis
+gate. Sometimes the car has already done the hard sensing for you — you just have to
+listen.
+<p style="font-size: 0.9em; color: #666;"><em>Firmware: ESP-IDF, target <code>esp32c3</code>.
+The full source is a single <code>main/main.c</code>; wiring lives in
+<code>hardware/schematic.md</code>. CAN decoding was derived from a real drive log
+captured with the companion CAN logger.</em></p>
