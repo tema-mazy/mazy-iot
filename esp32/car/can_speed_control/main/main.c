@@ -25,8 +25,8 @@ static const char *TAG = "CAN_SPEED";
 // testing with
 // generator
 
-#define SPEED_OFF_KMH 10
-#define SPEED_ON_KMH 8
+#define SPEED_OFF_KMH 15
+#define SPEED_ON_KMH 10
 #define CAN_ID_SWIFT_SPEED 0x1B8   // ABS wheel speeds: 4x uint16 BE, 0.01 m/s per count
 #define WHEEL_SPEED_INVALID 0x3FFF // broadcast before ABS is ready
 #define SPEED_STALE_US (5000LL * 1000LL)

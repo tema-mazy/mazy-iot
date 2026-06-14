@@ -5,9 +5,9 @@ listens to the car's CAN bus (500 kbps, listen-only), decodes vehicle speed from
 the ABS wheel-speed broadcast and drives a solid-state relay that enables the
 parking sensors only at low speed:
 
-- speed > 10 km/h → relay OFF → parking sensors disabled
-- speed < 8 km/h → relay ON → parking sensors enabled
-- 8–10 km/h → hysteresis dead-band, hold current state
+- speed > 15 km/h → relay OFF → parking sensors disabled
+- speed < 10 km/h → relay ON → parking sensors enabled
+- 10-15 km/h → hysteresis dead-band, hold current state
 
 ## Hardware
 

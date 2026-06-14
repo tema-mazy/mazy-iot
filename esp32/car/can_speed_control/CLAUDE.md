@@ -2,7 +2,7 @@
 
 ESP32-C3 firmware (ESP-IDF, target `esp32c3`): speed gate for Suzuki Swift V
 parking sensors. Reads vehicle speed from the CAN bus and switches an SSR so
-the sensors only work below ~10 km/h. See README.md for hardware and the CAN
+the sensors only work below ~15 km/h. See README.md for hardware and the CAN
 protocol table.
 
 ## Build & flash
@@ -24,7 +24,7 @@ Single file, single task: everything is in `main/main.c`, running in
   `km/h = raw * 36 / 1000` (raw unit 0.01 m/s). `0x3FFF` = "ABS not ready",
   treated as no-data. Found by log analysis in `../LCD-CAN-logger/`.
 - **Relay logic** (`update_relay`): hysteresis — OFF above `SPEED_OFF_KMH`
-  (10), ON below `SPEED_ON_KMH` (8), hold in between. GPIO0 high = SSR closed
+  (15), ON below `SPEED_ON_KMH` (10), hold in between. GPIO0 high = SSR closed
   = sensors enabled; GPIO8 LED is active-low and mirrors the relay.
 - **Fail-safe:** relay ON at boot and whenever no valid speed frame arrives
   for `SPEED_STALE_US` (5 s).

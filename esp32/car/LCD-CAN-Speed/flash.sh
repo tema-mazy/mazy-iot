@@ -13,7 +13,7 @@ echo "Using IDF_PATH: $IDF_PATH"
 . "$IDF_PATH/export.sh"
 
 # Default to /dev/ttyUSB0 if no port is specified as an argument
-PORT="${1:-/dev/cu.usbmodem2101}"
+PORT="${1:-/dev/cu.usbmodem1101}"
 
 echo "Flashing firmware to ESP32-C6 on port: $PORT"
 idf.py -p "$PORT" flash
