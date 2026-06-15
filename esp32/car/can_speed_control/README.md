@@ -1,6 +1,6 @@
 # can_speed_control
 
-Speed-gated parking sensor controller for a **Suzuki Swift V**. An ESP32-C3
+Speed-gated parking sensor controller for a **Suzuki Swift V**. An ESP32-C6
 listens to the car's CAN bus (500 kbps, listen-only), decodes vehicle speed from
 the ABS wheel-speed broadcast and drives a solid-state relay that enables the
 parking sensors only at low speed:
@@ -11,12 +11,14 @@ parking sensors only at low speed:
 
 ## Hardware
 
-- **MCU:** ESP32-C3 SuperMini
-- **CAN transceiver:** SN65HVD230 — TX GPIO20, RX GPIO21, tapped at the OBD-II
+- **MCU:** ESP32-C6
+- **CAN transceiver:** SN65HVD230 — TX GPIO20, RX GPIO14, tapped at the OBD-II
   port (pin 6 = CAN-H, pin 14 = CAN-L)
-- **SSR:** DC-DC opto-isolated relay on GPIO0, in series with the parking
+- **SSR:** DC-DC opto-isolated relay on GPIO1, in series with the parking
   sensor controller's brake-signal input (never the main brake light wire)
-- **LED:** onboard GPIO8 (active-low), mirrors relay state
+- **Status LED:** WS2812 on GPIO8 — red blink = CAN error, green = CAN OK,
+  blue = relay active (colors mix as RGB)
+- **Link LED:** GPIO15 — pulses 50 ms on every received CAN frame
 - Full wiring in [`hardware/schematic.md`](hardware/schematic.md)
 
 ## CAN decoding (Suzuki Swift V)
@@ -39,7 +41,7 @@ The firmware uses `0x1B8`, first wheel (bytes 0-1).
 
 ## Build & flash
 
-ESP-IDF project (target `esp32c3`), `IDF_PATH` must be set:
+ESP-IDF project (target `esp32c6`), `IDF_PATH` must be set:
 
 ```sh
 ./build.sh           # idf.py build
