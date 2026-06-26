@@ -2,7 +2,7 @@
 
 ESP32-C6 firmware (ESP-IDF, target `esp32c6`): speed gate for Suzuki Swift V
 parking sensors. Reads vehicle speed from the CAN bus and switches an SSR so
-the sensors only work below ~15 km/h. See README.md for hardware and the CAN
+the sensors only work at low speed. See README.md for hardware and the CAN
 protocol table.
 
 ## Build & flash
@@ -15,6 +15,9 @@ protocol table.
 `platformio.ini` targets an ESP8285 (legacy) — ignore it; the active build
 system is ESP-IDF/CMake.
 
+After changing `partitions.csv`, the first flash must be over cable (run
+`idf.py erase-flash` once, then `./flash.sh`); later updates can go over OTA.
+
 ## Architecture
 
 Single file, single task: everything is in `main/main.c`, running in
@@ -24,15 +27,28 @@ Single file, single task: everything is in `main/main.c`, running in
   `km/h = raw * 36 / 1000` (raw unit 0.01 m/s). `0x3FFF` = "ABS not ready",
   treated as no-data. Found by log analysis in `../LCD-CAN-logger/`.
 - **Relay logic** (`update_relay`): hysteresis — OFF above `SPEED_OFF_KMH`
-  (15), ON below `SPEED_ON_KMH` (10), hold in between. GPIO1 high = SSR closed
-  = sensors enabled.
+  (20), ON below `SPEED_ON_KMH` (17), hold in between. GPIO1 high = SSR closed
+  = sensors enabled. Thresholds are raw ABS wheel speed, which reads ~3-4 km/h
+  above the dashboard.
+- **Standstill:** valid speed of 0 km/h for `SPEED_STOP_US` (3 s) forces the
+  relay OFF (at a traffic light, show the map not the camera). Any non-zero
+  frame resets the timer and resumes hysteresis, so slow rolling = parking =
+  sensors on.
 - **LED:** WS2812 on GPIO8 (via RMT/`led_strip`): red blink = CAN error,
   green = CAN OK (valid speed frames arriving), blue = relay active. Colors mix
   as RGB. Separate link LED on GPIO15 pulses 50 ms on every received CAN frame.
 - **Fail-safe:** relay ON at boot and whenever no valid speed frame arrives
-  for `SPEED_STALE_US` (5 s).
-- WiFi AP + HTTP/SSE log streaming and the log ring buffer exist only as
-  commented-out stubs.
+  for `SPEED_STALE_US` (5 s). Note 0 km/h is a *valid* frame, so standstill
+  does not trip the stale fail-safe — only a truly silent bus does.
+- **WiFi AP + log stream:** SoftAP (SSID `Swift`, password `CONFIG_AP_PASSWORD`
+  from Kconfig — open if <8 chars) at 192.168.4.1, serving an HTML page (`/`)
+  and an SSE feed (`/logs`). `esp_log_set_vprintf` mirrors every `ESP_LOG*`
+  line into a 128-entry ring buffer that the SSE handler streams to clients.
+- **OTA** (`ota_handler`, `POST /update`): raw `.bin` in the body →
+  `esp_ota_*` into the inactive slot → `esp_restart`. The web page's OTA button
+  closes the SSE stream first — the httpd runs one task and the SSE handler
+  loops forever, so it must be released before another request can be served.
+  Two app slots live in `partitions.csv` (`ota_0`/`ota_1`, 1.5 MB each).
 
 ## Constraints / gotchas
 

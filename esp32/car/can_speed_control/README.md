@@ -5,9 +5,12 @@ listens to the car's CAN bus (500 kbps, listen-only), decodes vehicle speed from
 the ABS wheel-speed broadcast and drives a solid-state relay that enables the
 parking sensors only at low speed:
 
-- speed > 15 km/h → relay OFF → parking sensors disabled
-- speed < 10 km/h → relay ON → parking sensors enabled
-- 10-15 km/h → hysteresis dead-band, hold current state
+- speed > 20 km/h → relay OFF → parking sensors disabled
+- speed < 17 km/h → relay ON → parking sensors enabled
+- 17-20 km/h → hysteresis dead-band, hold current state
+- stopped (0 km/h) for 3 s → relay OFF → show the map, not the camera
+
+Thresholds are raw ABS wheel speed, which reads ~3-4 km/h above the dashboard.
 
 ## Hardware
 
@@ -36,8 +39,22 @@ The firmware uses `0x1B8`, first wheel (bytes 0-1).
 ## Safety defaults
 
 - On power-up the relay is ON (sensors enabled) until a valid speed arrives.
-- If no valid speed frame for 5 s, the relay is forced ON (fail-safe).
+- If no valid speed frame for 5 s, the relay is forced ON (fail-safe). A 0 km/h
+  reading is a valid frame, so standing still does not trip this — only a silent
+  bus does.
 - Two slow boot blinks indicate startup.
+
+## Web UI & OTA
+
+The device runs a SoftAP (SSID `Swift`) and HTTP server at `http://192.168.4.1/`:
+
+- live log stream (SSE) of every `ESP_LOG*` line
+- **OTA update:** pick a `build/canspeed.bin` and hit *OTA update* — the firmware
+  writes it to the inactive slot and reboots into it. No cable needed.
+
+Two 1.5 MB OTA app slots (`partitions.csv`). The **first** flash after changing
+the partition table must be over cable (`./flash.sh`, ideally after
+`idf.py erase-flash`); subsequent updates can go over WiFi.
 
 ## Build & flash
 
@@ -45,5 +62,5 @@ ESP-IDF project (target `esp32c6`), `IDF_PATH` must be set:
 
 ```sh
 ./build.sh           # idf.py build
-./flash.sh [port]    # flash + monitor
+./flash.sh [port]    # flash + monitor (cable; needed once after partition change)
 ```

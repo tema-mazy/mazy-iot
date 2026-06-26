@@ -4,6 +4,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_ota_ops.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -25,11 +26,12 @@ static const char *TAG = "CAN_SPEED";
 #define CAN_MODE     TWAI_MODE_LISTEN_ONLY
 // Switch to TWAI_MODE_NORMAL for bench testing with a generator (needs ACK)
 
-#define SPEED_OFF_KMH      15
-#define SPEED_ON_KMH       10
+#define SPEED_OFF_KMH      20
+#define SPEED_ON_KMH       17
 #define CAN_ID_SWIFT_SPEED 0x1B8   // ABS wheel speeds: 4x uint16 BE, 0.01 m/s
 #define WHEEL_SPEED_INVALID 0x3FFF // "ABS not ready" sentinel
 #define SPEED_STALE_US     (5000LL * 1000LL)
+#define SPEED_STOP_US      (3000LL * 1000LL) // standstill before relay off (map, not cam)
 
 // ── Log ring buffer ──────────────────────────────────────────────────────────
 #define LOG_RING_SIZE 128
@@ -73,7 +75,7 @@ static void led_init(void) {
   led_strip_config_t strip_cfg = {
       .strip_gpio_num   = LED_GPIO,
       .max_leds         = 1,
-      .led_pixel_format = LED_PIXEL_FORMAT_GRB,
+      .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
       .led_model        = LED_MODEL_WS2812,
   };
   led_strip_rmt_config_t rmt_cfg = {.resolution_hz = 10 * 1000 * 1000};
@@ -86,14 +88,20 @@ static void led_set(uint8_t r, uint8_t g, uint8_t b) {
   led_strip_refresh(s_led);
 }
 
-static void led_update(bool can_error, bool can_ok, bool relay_on,
-                       int64_t now_us) {
+// can_frames: any CAN frame received recently; can_ok: valid speed frame received
+static void led_update(bool can_error, bool can_frames, bool can_ok,
+                       bool relay_on, int64_t now_us) {
   uint8_t r = 0, g = 0, b = 0;
-  if (can_error) {
-    bool blink_on = (now_us / 250000LL) % 2 == 0;
+  if (can_error || (!can_frames && !can_ok)) {
+    bool blink_on = (now_us / 500000LL) % 2 == 0;
     r = blink_on ? 200 : 0;
   }
-  if (can_ok)   g = 100;
+  if (can_ok)
+    g = 100;
+  else if (can_frames) {
+    bool blink_on = (now_us / 500000LL) % 2 == 0;
+    g = blink_on ? 100 : 0;
+  }
   if (relay_on) b = 100;
   led_set(r, g, b);
 }
@@ -167,7 +175,18 @@ static const char *INDEX_HTML =
     "<!DOCTYPE html><html><head><title>CAN Speed</title>"
     "<style>body{font-family:monospace;background:#111;color:#0f0;margin:8px}"
     "#log{white-space:pre-wrap;font-size:13px}</style></head>"
-    "<body><div id='log'></div><script>"
+    "<body>"
+    "<form id='f' method='POST' action='/update' enctype='application/octet-stream'>"
+    "<input type='file' id='fw' accept='.bin'> "
+    "<button type='button' onclick='up()'>OTA update</button>"
+    "<span id='st'></span></form>"
+    "<div id='log'></div><script>"
+    "function up(){var f=document.getElementById('fw').files[0];if(!f)return;"
+    "var s=document.getElementById('st');s.textContent=' uploading...';"
+    "es.close();" // free the single httpd task (SSE handler blocks it)
+    "fetch('/update',{method:'POST',body:f}).then(function(r){"
+    "return r.text();}).then(function(t){s.textContent=' '+t;}).catch("
+    "function(e){s.textContent=' failed: '+e;});}"
     "var es=new EventSource('/logs');"
     "es.onmessage=function(e){"
     "var d=document.getElementById('log');"
@@ -224,6 +243,58 @@ static esp_err_t sse_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+// Receives a raw firmware .bin in the POST body, writes it to the inactive OTA
+// slot, and reboots into it. Relay/CAN keep running until the final esp_restart.
+static esp_err_t ota_handler(httpd_req_t *req) {
+  const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
+  if (!part) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no OTA partition");
+    return ESP_FAIL;
+  }
+  ESP_LOGW(TAG, "OTA: receiving %d bytes -> %s", req->content_len, part->label);
+
+  esp_ota_handle_t ota = 0;
+  if (esp_ota_begin(part, OTA_SIZE_UNKNOWN, &ota) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota_begin failed");
+    return ESP_FAIL;
+  }
+
+  char buf[1024];
+  int remaining = req->content_len;
+  while (remaining > 0) {
+    int r = httpd_req_recv(req, buf, remaining < sizeof(buf) ? remaining : sizeof(buf));
+    if (r == HTTPD_SOCK_ERR_TIMEOUT)
+      continue;
+    if (r <= 0) {
+      esp_ota_abort(ota);
+      ESP_LOGE(TAG, "OTA: recv failed (%d)", r);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "recv failed");
+      return ESP_FAIL;
+    }
+    if (esp_ota_write(ota, buf, r) != ESP_OK) {
+      esp_ota_abort(ota);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota_write failed");
+      return ESP_FAIL;
+    }
+    remaining -= r;
+  }
+
+  if (esp_ota_end(ota) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota_end failed (bad image?)");
+    return ESP_FAIL;
+  }
+  if (esp_ota_set_boot_partition(part) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "set_boot failed");
+    return ESP_FAIL;
+  }
+
+  ESP_LOGW(TAG, "OTA: success, rebooting into %s", part->label);
+  httpd_resp_sendstr(req, "OK — rebooting");
+  vTaskDelay(pdMS_TO_TICKS(500));
+  esp_restart();
+  return ESP_OK;
+}
+
 static void httpd_init(void) {
   httpd_config_t config    = HTTPD_DEFAULT_CONFIG();
   config.lru_purge_enable  = true;
@@ -234,8 +305,10 @@ static void httpd_init(void) {
 
   httpd_uri_t uri_index = {.uri = "/",     .method = HTTP_GET, .handler = index_handler};
   httpd_uri_t uri_logs  = {.uri = "/logs", .method = HTTP_GET, .handler = sse_handler};
+  httpd_uri_t uri_ota   = {.uri = "/update", .method = HTTP_POST, .handler = ota_handler};
   httpd_register_uri_handler(server, &uri_index);
   httpd_register_uri_handler(server, &uri_logs);
+  httpd_register_uri_handler(server, &uri_ota);
   ESP_LOGI(TAG, "HTTP server ready at http://192.168.4.1/");
 }
 
@@ -290,6 +363,8 @@ void app_main(void) {
   can_init();
 
   int64_t last_speed_us  = 0;
+  int64_t zero_since_us  = 0;
+  int64_t last_frame_us  = 0;
   int64_t last_status_us = 0;
   int64_t link_on_us     = 0;
   bool    can_error      = false;
@@ -315,28 +390,40 @@ void app_main(void) {
         can_error = (status.bus_error_count > 0 ||
                      status.state == TWAI_STATE_BUS_OFF ||
                      status.state == TWAI_STATE_RECOVERING);
-        if (can_error)
-          ESP_LOGW(TAG,
-                   "CAN error: state=%d rx_err=%ld tx_err=%ld "
-                   "rx_miss=%ld bus_err=%ld",
-                   (int)status.state, (long)status.rx_error_counter,
-                   (long)status.tx_error_counter, (long)status.rx_missed_count,
-                   (long)status.bus_error_count);
+        ESP_LOGI(TAG,
+                 "CAN status: state=%d rx_err=%ld tx_err=%ld "
+                 "rx_miss=%ld bus_err=%ld msgs_rx=%ld rx_pin=%d",
+                 (int)status.state, (long)status.rx_error_counter,
+                 (long)status.tx_error_counter, (long)status.rx_missed_count,
+                 (long)status.bus_error_count, (long)status.msgs_to_rx,
+                 gpio_get_level(CAN_RXD_GPIO));
       }
     }
 
-    led_update(can_error, last_speed_us > 0, relay_active, now_us);
+    led_update(can_error,
+               last_frame_us > 0 && (now_us - last_frame_us) < SPEED_STALE_US,
+               last_speed_us > 0,
+               relay_active, now_us);
 
     twai_message_t rx;
     esp_err_t err = twai_receive(&rx, pdMS_TO_TICKS(15));
     if (err == ESP_OK) {
       gpio_set_level(LINK_GPIO, 1);
       link_on_us = now_us;
+      last_frame_us = now_us;
       int s = parse_broadcast(&rx);
       if (s >= 0) {
         last_speed_us = now_us;
         ESP_LOGI(TAG, "Speed: %d km/h", s);
-        update_relay(s);
+        if (s == 0) {
+          if (zero_since_us == 0) zero_since_us = now_us;
+        } else {
+          zero_since_us = 0;
+        }
+        if (zero_since_us > 0 && (now_us - zero_since_us) > SPEED_STOP_US)
+          relay_set(false); // standing still (e.g. traffic light) → show map, not cam
+        else
+          update_relay(s);
         taskYIELD();
       }
     } else if (err != ESP_ERR_TIMEOUT) {
