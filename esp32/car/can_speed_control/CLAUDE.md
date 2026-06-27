@@ -49,6 +49,11 @@ Single file, single task: everything is in `main/main.c`, running in
   closes the SSE stream first — the httpd runs one task and the SSE handler
   loops forever, so it must be released before another request can be served.
   Two app slots live in `partitions.csv` (`ota_0`/`ota_1`, 1.5 MB each).
+- **OTA rollback** (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`): a new image boots
+  in pending-verify state. `ota_confirm` (called from `index_handler`) marks it
+  valid the first time the web page is served — if the UI is reachable, AP +
+  httpd are up, so the image is healthy. A bricked image never reaches there, so
+  the bootloader reverts to the previous slot on next reset.
 
 ## Constraints / gotchas
 

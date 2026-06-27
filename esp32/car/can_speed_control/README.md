@@ -52,6 +52,12 @@ The device runs a SoftAP (SSID `Swift`) and HTTP server at `http://192.168.4.1/`
 - **OTA update:** pick a `build/canspeed.bin` and hit *OTA update* — the firmware
   writes it to the inactive slot and reboots into it. No cable needed.
 
+**Rollback safety:** the bootloader boots a freshly OTA'd image in pending-verify
+state. The image is marked valid only once the web UI is served (if the page
+loads, AP + httpd came up, so the image is healthy and you can push another OTA).
+A bad image that can't bring up the web server never confirms itself, so the
+bootloader reverts to the previous slot on the next reset.
+
 Two 1.5 MB OTA app slots (`partitions.csv`). The **first** flash after changing
 the partition table must be over cable (`./flash.sh`, ideally after
 `idf.py erase-flash`); subsequent updates can go over WiFi.

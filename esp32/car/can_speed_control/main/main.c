@@ -173,10 +173,15 @@ static void wifi_init_ap(void) {
 // ── HTTP / SSE ───────────────────────────────────────────────────────────────
 static const char *INDEX_HTML =
     "<!DOCTYPE html><html><head><title>CAN Speed</title>"
-    "<style>body{font-family:monospace;background:#111;color:#0f0;margin:8px}"
-    "#log{white-space:pre-wrap;font-size:13px}</style></head>"
+    "<style>html,body{height:100%;margin:0}"
+    "body{font-family:monospace;background:#111;color:#0f0;"
+    "display:flex;flex-direction:column}"
+    "#bar{position:sticky;top:0;background:#111;border-bottom:1px solid #0f0;"
+    "padding:8px;z-index:1}"
+    "#log{flex:1;overflow-y:auto;white-space:pre-wrap;font-size:13px;padding:8px}"
+    "</style></head>"
     "<body>"
-    "<form id='f' method='POST' action='/update' enctype='application/octet-stream'>"
+    "<form id='bar' method='POST' action='/update' enctype='application/octet-stream'>"
     "<input type='file' id='fw' accept='.bin'> "
     "<button type='button' onclick='up()'>OTA update</button>"
     "<span id='st'></span></form>"
@@ -190,11 +195,26 @@ static const char *INDEX_HTML =
     "var es=new EventSource('/logs');"
     "es.onmessage=function(e){"
     "var d=document.getElementById('log');"
+    "var b=d.scrollHeight-d.scrollTop-d.clientHeight<20;"
     "d.textContent+=e.data+'\\n';"
-    "window.scrollTo(0,document.body.scrollHeight);};"
+    "if(b)d.scrollTop=d.scrollHeight;};"
     "</script></body></html>";
 
+// Mark the running image valid, cancelling the pending rollback. Called the
+// first time the web server serves a page: if the UI is reachable you can push
+// another OTA, so the image is healthy by definition. A bricked image that
+// can't bring up AP+httpd never reaches here, so the bootloader reverts it.
+static void ota_confirm(void) {
+  const esp_partition_t *run = esp_ota_get_running_partition();
+  esp_ota_img_states_t st;
+  if (esp_ota_get_state_partition(run, &st) == ESP_OK &&
+      st == ESP_OTA_IMG_PENDING_VERIFY &&
+      esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)
+    ESP_LOGW(TAG, "OTA image confirmed valid (web UI reachable)");
+}
+
 static esp_err_t index_handler(httpd_req_t *req) {
+  ota_confirm();
   return httpd_resp_send(req, INDEX_HTML, strlen(INDEX_HTML));
 }
 
