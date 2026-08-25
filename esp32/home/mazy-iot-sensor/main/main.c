@@ -624,13 +624,14 @@ static esp_err_t api_values_handler(httpd_req_t *req) {
   }
   portEXIT_CRITICAL(&spinlock);
 
-  char body[256];
+  char body[288];
   int len = snprintf(body, sizeof(body),
-                     "{\"room\":\"%s\",\"id\":\"%s\","
+                     "{\"room\":\"%s\",\"id\":\"%s\",\"slot\":\"%s\","
                      "\"temp\":%.1f,\"humidity\":%.1f,\"co2\":%.0f,"
                      "\"airq\":%d,\"alert\":%s,\"uptime\":%lld}",
-                     room_name, ssid, temp, humidity, co2, airq,
-                     alert ? "true" : "false", esp_timer_get_time() / 1000000);
+                     room_name, ssid, esp_ota_get_running_partition()->label,
+                     temp, humidity, co2, airq, alert ? "true" : "false",
+                     esp_timer_get_time() / 1000000);
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
