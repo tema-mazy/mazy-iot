@@ -9,6 +9,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
+#include "esp_sntp.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -21,8 +22,12 @@
 static const char *TAG = "dashdata";
 
 /* Open-Meteo only recomputes hourly, so polling it hard buys nothing. */
-#define WEATHER_INTERVAL_US (15 * 60 * 1000000LL)
+#define WEATHER_INTERVAL_US (30 * 60 * 1000000LL)
 #define AIR_INTERVAL_US     (30 * 60 * 1000000LL)
+
+/* The ESP32 RTC drifts over long uptimes, so resync rather than trusting the
+ * single sync at boot. */
+#define NTP_SYNC_INTERVAL_MS (4 * 60 * 60 * 1000)
 
 /* Drop a sensor's values once nothing has been heard for this long, rather
  * than showing a number that quietly stopped updating. */
@@ -65,7 +70,13 @@ static void time_start(void)
     tzset();
 
     esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    /* Hold off the automatic start so the resync interval is in place before
+     * the first query rather than after it. */
+    cfg.start = false;
     esp_netif_sntp_init(&cfg);
+
+    esp_sntp_set_sync_interval(NTP_SYNC_INTERVAL_MS);
+    esp_netif_sntp_start();
 
     if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(10000)) == ESP_OK) {
         s_snap.time_valid = true;

@@ -105,7 +105,7 @@ firmware cannot turn it off - only lifting the LED or its resistor will.
 | `DASH_WEATHER_LAT` / `_LON` | 50.0006 / 19.9167  | Borek Falecki, Krakow            |
 | `DASH_WEATHER_PLACE`        | `Krakow, Borek`    | unused since the title is Outdoor|
 | `DASH_SCREEN_SECONDS`       | 12                 | dwell per screen                 |
-| `DASH_REFRESH_SECONDS`      | 120                | sensor poll interval             |
+| `DASH_REFRESH_SECONDS`      | 60                 | sensor poll interval             |
 | `DASH_FULL_REFRESH_EVERY`   | 6                  | full refresh every N screens     |
 
 Credentials live in `sdkconfig`, which is gitignored. Do not delete that file
@@ -125,8 +125,22 @@ cost is that a new sensor has to be added to that list by hand. If you want
 real discovery back, look for an IGMP snooping or multicast setting on the AP.
 
 Weather and air quality come from Open-Meteo over HTTPS using the IDF
-certificate bundle. No API key. Both are polled far less often than the
-sensors (15 and 30 minutes) because Open-Meteo only recomputes hourly.
+certificate bundle. No API key.
+
+| Feed         | Interval | Set in                                |
+|--------------|----------|---------------------------------------|
+| Sensors      | 60 s     | `DASH_REFRESH_SECONDS` (menuconfig)   |
+| Weather      | 30 min   | `WEATHER_INTERVAL_US` in `dashdata.c` |
+| Air quality  | 30 min   | `AIR_INTERVAL_US` in `dashdata.c`     |
+| NTP resync   | 4 h      | `NTP_SYNC_INTERVAL_MS` in `dashdata.c`|
+| Stale cutoff | 10 min   | `SENSOR_STALE_US` in `dashdata.c`     |
+
+All feeds are checked on the sensor tick, but weather and air quality compare
+their own age first, so they only reach the network on their own schedule -
+Open-Meteo recomputes hourly, so polling harder buys nothing.
+
+SNTP resyncs periodically rather than only at boot, since the ESP32 RTC drifts
+noticeably over the weeks of uptime a wall display accumulates.
 
 A failed fetch keeps the previous values rather than blanking a screen; values
 are only dropped after ten minutes of silence.

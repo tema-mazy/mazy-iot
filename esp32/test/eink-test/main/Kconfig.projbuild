@@ -41,7 +41,7 @@ menu "E-paper dashboard"
 
     config DASH_REFRESH_SECONDS
         int "Seconds between data refreshes"
-        default 120
+        default 60
         range 30 3600
         help
             Sensors are polled at this interval. Weather and air quality are
