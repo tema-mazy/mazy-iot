@@ -1,0 +1,5 @@
+dependencies:
+  idf:
+    version: ">=6.0"
+  espressif/onewire_bus: ">=1.0.0"
+  espressif/ds18b20: ">=0.1.2"
