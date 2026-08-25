@@ -5,6 +5,13 @@
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_CSV_PATH="partitions.csv"
 
+# OTA. The C3 Super Mini has 4MB; the old 2MB setting was too conservative and
+# left no room for a second app slot.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+# Roll back automatically if a new image never marks itself valid.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
 
 # General Optimization
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y

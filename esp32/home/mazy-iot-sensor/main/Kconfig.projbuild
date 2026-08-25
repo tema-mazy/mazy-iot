@@ -12,6 +12,14 @@ menu "Mazy's IOT Config"
               help
                   WiFi password (WPA or WPA2) for the example to use.
 
+      config ESP_ROOM_NAME
+              string "Room name"
+              default "Room"
+              help
+                  Where this sensor lives, e.g. Bedroom or Office. Published in
+                  the JSON API and as an mDNS TXT record, and shown on the
+                  e-paper dashboard. Set a different value per unit.
+
       config ESP_LED_GPIO
               int "Set the GPIO for the LED"
               default 8

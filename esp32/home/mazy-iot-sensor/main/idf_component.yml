@@ -3,5 +3,7 @@ dependencies:
     version: ">=5.0"
   espressif/cjson:
     version: "*"
+  espressif/mdns:
+    version: "*"
   achimpieters/esp32-homekit:
     version: "*"

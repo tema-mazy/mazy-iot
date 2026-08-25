@@ -38,8 +38,10 @@
 #include <esp_http_server.h>
 #include <esp_log.h>
 #include <esp_mac.h>
+#include <esp_ota_ops.h>
 #include <esp_timer.h>
 #include <esp_wifi.h>
+#include <mdns.h>
 #include <nvs_flash.h>
 
 #include <driver/gpio.h>
@@ -565,6 +567,248 @@ homekit_server_config_t config = {
     .setupId = CONFIG_ESP_SETUP_ID,
 };
 
+// Local JSON API, so other devices on the LAN (e.g. the e-paper dashboard)
+// can read the same values HomeKit sees without going through Apple Home.
+static httpd_handle_t api_server = NULL;
+
+#define NVS_CFG_NAMESPACE "mazyiot"
+#define NVS_CFG_KEY_ROOM "room"
+
+// Which room this unit sits in. Held in NVS so all units can run the same
+// image; CONFIG_ESP_ROOM_NAME is only the factory default.
+static char room_name[32] = CONFIG_ESP_ROOM_NAME;
+
+static void room_name_load(void) {
+  nvs_handle_t nvs;
+  if (nvs_open(NVS_CFG_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+    ESP_LOGI("API", "no stored room name, using default '%s'", room_name);
+    return;
+  }
+
+  size_t len = sizeof(room_name);
+  esp_err_t err = nvs_get_str(nvs, NVS_CFG_KEY_ROOM, room_name, &len);
+  nvs_close(nvs);
+
+  if (err != ESP_OK) {
+    ESP_LOGI("API", "no stored room name, using default '%s'", room_name);
+  }
+}
+
+static esp_err_t room_name_save(const char *value) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_CFG_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  err = nvs_set_str(nvs, NVS_CFG_KEY_ROOM, value);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+  return err;
+}
+
+static esp_err_t api_values_handler(httpd_req_t *req) {
+  float temp, humidity, co2;
+  int airq;
+  bool alert;
+
+  portENTER_CRITICAL(&spinlock);
+  {
+    temp = cha_temperature.value.float_value;
+    humidity = cha_humidity.value.float_value;
+    co2 = cha_co2.value.float_value;
+    airq = cha_air.value.int_value;
+    alert = cha_co2_alert.value.bool_value;
+  }
+  portEXIT_CRITICAL(&spinlock);
+
+  char body[256];
+  int len = snprintf(body, sizeof(body),
+                     "{\"room\":\"%s\",\"id\":\"%s\","
+                     "\"temp\":%.1f,\"humidity\":%.1f,\"co2\":%.0f,"
+                     "\"airq\":%d,\"alert\":%s,\"uptime\":%lld}",
+                     room_name, ssid, temp, humidity, co2, airq,
+                     alert ? "true" : "false", esp_timer_get_time() / 1000000);
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  return httpd_resp_send(req, body, len);
+}
+
+// POST /api/room with the room name as the raw body. Takes effect on the next
+// reboot for mDNS, immediately for /api/values.
+static esp_err_t api_room_handler(httpd_req_t *req) {
+  char body[sizeof(room_name)];
+
+  if (req->content_len == 0 || req->content_len >= sizeof(body)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "room name 1..31 bytes");
+    return ESP_FAIL;
+  }
+
+  int received = httpd_req_recv(req, body, req->content_len);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "read failed");
+    return ESP_FAIL;
+  }
+  body[received] = '\0';
+
+  esp_err_t err = room_name_save(body);
+  if (err != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        esp_err_to_name(err));
+    return ESP_FAIL;
+  }
+
+  strlcpy(room_name, body, sizeof(room_name));
+  ESP_LOGI("API", "room name set to '%s'", room_name);
+
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+// POST /api/update with the raw .bin as the body. Writes the inactive OTA
+// slot and reboots into it; the bootloader rolls back if the new image never
+// marks itself valid.
+static esp_err_t api_update_handler(httpd_req_t *req) {
+  const esp_partition_t *target = esp_ota_get_next_update_partition(NULL);
+  if (!target) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no OTA slot");
+    return ESP_FAIL;
+  }
+
+  ESP_LOGW("OTA", "update starting, %d bytes -> %s", req->content_len,
+           target->label);
+
+  esp_ota_handle_t handle = 0;
+  esp_err_t err = esp_ota_begin(target, req->content_len, &handle);
+  if (err != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        esp_err_to_name(err));
+    return ESP_FAIL;
+  }
+
+  char buf[1024];
+  int remaining = req->content_len;
+  while (remaining > 0) {
+    int chunk = httpd_req_recv(req, buf, MIN(remaining, (int)sizeof(buf)));
+    if (chunk == HTTPD_SOCK_ERR_TIMEOUT) {
+      continue;
+    }
+    if (chunk <= 0) {
+      esp_ota_abort(handle);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "upload truncated");
+      return ESP_FAIL;
+    }
+
+    err = esp_ota_write(handle, buf, chunk);
+    if (err != ESP_OK) {
+      esp_ota_abort(handle);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                          esp_err_to_name(err));
+      return ESP_FAIL;
+    }
+    remaining -= chunk;
+  }
+
+  err = esp_ota_end(handle);
+  if (err == ESP_OK) {
+    err = esp_ota_set_boot_partition(target);
+  }
+  if (err != ESP_OK) {
+    ESP_LOGE("OTA", "update failed: %s", esp_err_to_name(err));
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        esp_err_to_name(err));
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, "{\"ok\":true,\"rebooting\":true}");
+
+  ESP_LOGW("OTA", "update written, rebooting into %s", target->label);
+  vTaskDelay(pdMS_TO_TICKS(500));
+  esp_restart();
+  return ESP_OK;
+}
+
+static void api_server_start(void) {
+  if (api_server) {
+    return;
+  }
+
+  room_name_load();
+
+  httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+  // HomeKit already owns port 80 style traffic on its own socket; keep this
+  // API on a separate port so the two never fight over binding.
+  cfg.server_port = 8080;
+  cfg.ctrl_port = 32769;
+  cfg.lru_purge_enable = true;
+
+  esp_err_t err = httpd_start(&api_server, &cfg);
+  if (err != ESP_OK) {
+    ESP_LOGE("API", "httpd_start failed: %s", esp_err_to_name(err));
+    api_server = NULL;
+    return;
+  }
+
+  static const httpd_uri_t values_uri = {
+      .uri = "/api/values",
+      .method = HTTP_GET,
+      .handler = api_values_handler,
+  };
+  httpd_register_uri_handler(api_server, &values_uri);
+
+  static const httpd_uri_t room_uri = {
+      .uri = "/api/room",
+      .method = HTTP_POST,
+      .handler = api_room_handler,
+  };
+  httpd_register_uri_handler(api_server, &room_uri);
+
+  static const httpd_uri_t update_uri = {
+      .uri = "/api/update",
+      .method = HTTP_POST,
+      .handler = api_update_handler,
+  };
+  httpd_register_uri_handler(api_server, &update_uri);
+
+  // Advertise a stable name so clients do not need a hardcoded IP. mDNS is
+  // already running for HomeKit, so init may legitimately report "already
+  // initialized" here.
+  esp_err_t merr = mdns_init();
+  if (merr != ESP_OK && merr != ESP_ERR_INVALID_STATE) {
+    ESP_LOGW("API", "mdns_init: %s", esp_err_to_name(merr));
+  }
+
+  // Do not set the hostname here: the HomeKit component already claimed it
+  // (MIOT32-THC-xxxxxx.local, unique per unit via MAC), and it wins.
+  //
+  // Clients discover us by browsing _mazyiot._tcp rather than by hostname,
+  // which is what makes several of these coexist on one LAN. The room name
+  // rides along as a TXT record so a dashboard needs no static list.
+  mdns_txt_item_t txt[] = {
+      {"room", room_name},
+      {"path", "/api/values"},
+  };
+  mdns_service_add("Mazy IOT Sensor API", "_mazyiot", "_tcp", 8080, txt,
+                   sizeof(txt) / sizeof(txt[0]));
+
+  ESP_LOGI("API", "room '%s' JSON API on http://%s.local:8080/api/values",
+           room_name, ssid);
+
+  // We booted, joined WiFi and served the API, so this image is good. Without
+  // this the bootloader would roll back to the previous slot on next reset.
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  esp_ota_img_states_t state;
+  if (esp_ota_get_state_partition(running, &state) == ESP_OK &&
+      state == ESP_OTA_IMG_PENDING_VERIFY) {
+    esp_ota_mark_app_valid_cancel_rollback();
+    ESP_LOGI("OTA", "image on %s marked valid", running->label);
+  }
+}
+
 static void on_wifi_ready() {
   if (homekit_initialized) {
     ESP_LOGI("INFORMATION", "HomeKit already initialized, skipping...");
@@ -575,6 +819,8 @@ static void on_wifi_ready() {
   cha_sn.value = HOMEKIT_STRING(ssn);
   homekit_server_init(&config);
   homekit_initialized = true;
+
+  api_server_start();
 }
 
 void app_main(void) {
