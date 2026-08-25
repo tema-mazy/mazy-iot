@@ -1,0 +1,58 @@
+menu "E-paper dashboard"
+
+    config DASH_WIFI_SSID
+        string "WiFi SSID"
+        default "ssid"
+        help
+            Network the dashboard joins. Must be the same LAN as the sensors,
+            since they are found over mDNS.
+
+    config DASH_WIFI_PASSWORD
+        string "WiFi password"
+        default "password"
+
+    config DASH_SENSOR_HOSTS
+        string "Fallback sensor hostnames (comma separated, no .local)"
+        default "MIOT32-THC-943ab8,MIOT32-THC-93f878,MIOT32-THC-f1a974"
+        help
+            Used only when browsing _mazyiot._tcp returns nothing. Some access
+            points drop the multicast that service browsing depends on, while
+            plain .local name resolution still works. Leave empty to rely on
+            discovery alone.
+
+    config DASH_WEATHER_LAT
+        string "Weather latitude"
+        default "50.0006"
+        help
+            Decimal degrees. Default is Borek Falecki, Krakow.
+
+    config DASH_WEATHER_LON
+        string "Weather longitude"
+        default "19.9167"
+
+    config DASH_WEATHER_PLACE
+        string "Place name shown on the weather screen"
+        default "Krakow, Borek"
+
+    config DASH_SCREEN_SECONDS
+        int "Seconds each screen stays up"
+        default 12
+        range 5 300
+
+    config DASH_REFRESH_SECONDS
+        int "Seconds between data refreshes"
+        default 120
+        range 30 3600
+        help
+            Sensors are polled at this interval. Weather and air quality are
+            polled less often, since Open-Meteo only updates hourly.
+
+    config DASH_FULL_REFRESH_EVERY
+        int "Full panel refresh every N screens"
+        default 6
+        range 1 200
+        help
+            Partial refreshes are fast but leave ghosting. A full refresh
+            flashes the panel and clears it.
+
+endmenu
