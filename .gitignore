@@ -9,3 +9,5 @@ sdkconfig.old
 platformio.ini
 1
 **/.DS_Store
+# Vendor demo archives - large binaries do not belong in git history.
+*.zip
