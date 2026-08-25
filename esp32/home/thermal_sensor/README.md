@@ -1,8 +1,8 @@
-# `HomeKit Temperature & Humidity & CO2 Sensor`
+# `HomeKit Temperature Sensor`
 
 ## What it does
 
-This project reads temperature and humidity data from a SHT21 and MH-Z19b sensors and exposes the data to Apple HomeKit 
+This project reads temperature from DS18 sensors and exposes the data to Apple HomeKit 
 as three separate sensors: one for temperature, one for humidity and for carbon dioxide. It also includes an alarm for CO2 level above 2000 ppm.
 
 ## Key Features
