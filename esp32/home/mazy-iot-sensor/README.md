@@ -186,3 +186,13 @@ WiFi credentials live in `sdkconfig` (gitignored); `sdkconfig.defaults` only
 carries `"***"` placeholders. If you wipe `sdkconfig`, the credentials go with
 it and the device will sit in a reconnect loop - `sdkconfig.old` is usually
 the only other copy.
+
+---
+
+## TODO
+
+- **WiFi manager.** Move credentials out of `sdkconfig` and into NVS, the same
+  way the room name works now, with a fallback AP and a captive portal for
+  first-time setup. Compiled-in credentials mean a rebuild per network and a
+  lost `sdkconfig` takes the credentials with it. NVS-stored credentials also
+  survive OTA, so a unit could be moved to another network without USB.
