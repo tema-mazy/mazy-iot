@@ -1,7 +1,12 @@
 dependencies:
+  # 5.3 is what onewire_bus/ds18b20 actually need. The manifest previously
+  # asked for >=6.0, which no installed IDF satisfies, so version solving
+  # failed before a single file was compiled.
   idf:
-    version: ">=6.0"
+    version: ">=5.3"
   achimpieters/esp32-homekit:
-    version: ">=1.2.4"
+    version: "*"
+  # Pinned to the 0.1.x line: later releases pull in espressif/sensor_hub,
+  # whose Kconfig references a DS18B20_SENSOR_HUB symbol that does not exist.
+  espressif/ds18b20: "~0.1.2"
   espressif/onewire_bus: ">=1.0.0"
-  espressif/ds18b20: ">=0.1.2"

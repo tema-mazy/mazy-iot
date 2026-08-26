@@ -34,7 +34,36 @@ registered and read.
 - Every reading is pushed to both HomeKit and MQTT. There is no
   change-threshold filtering.
 - `-127` is treated as the "no reading" sentinel and is not published.
-- The LED is used only for the HomeKit identify blink.
+
+### Probe detection and recovery
+
+The bus is brought up at boot but **not** scanned there, so a missing probe
+cannot stop WiFi, HomeKit and MQTT from starting.
+
+Scanning happens in the sensor task and never gives up. If no device is
+registered it rescans every cycle; if a read fails, the probe is released with
+`ds18b20_del_device()` and rediscovered on the next cycle. A probe that was
+never connected and one unplugged later are the same case, so pulling the
+sensor and plugging it back in recovers on its own.
+
+A failed read does not restart the device. It previously did, via
+`ESP_ERROR_CHECK`.
+
+### Health signalling
+
+This board runs headless, so probe state is reported where it can actually be
+seen rather than in the log:
+
+| Channel | Healthy         | No probe             |
+|---------|-----------------|----------------------|
+| LED     | off             | lit                  |
+| MQTT    | `status` = `ok` | `status` = `no_sensor` |
+
+The status topic is `sensors/beczka_water/status`, published **retained** and
+only on change, so a dashboard or broker subscriber sees the current state
+immediately on connect.
+
+The LED is otherwise used for the HomeKit identify blink.
 
 ## Identity
 
@@ -67,10 +96,18 @@ symbols while keeping existing values.
 
 From `main/idf_component.yml`:
 
-- **idf** `>=6.0`
-- **achimpieters/esp32-homekit** `>=1.2.4`
+- **idf** `>=5.3`
+- **achimpieters/esp32-homekit** `*`
+- **espressif/ds18b20** `~0.1.2`
 - **espressif/onewire_bus** `>=1.0.0`
-- **espressif/ds18b20** `>=0.1.2`
+
+`ds18b20` is pinned to the 0.1.x line deliberately: later releases pull in
+`espressif/sensor_hub`, whose Kconfig references a `DS18B20_SENSOR_HUB` symbol
+that does not exist, and the build fails with "Missing required kconfig option
+after retry".
+
+Builds on ESP-IDF 5.5.1. App is about 1.11 MB in the 1.46 MB single-app-large
+partition, 26% free.
 
 ## HomeKit
 
@@ -79,32 +116,29 @@ One accessory, one functional service:
 - Accessory Information
 - Temperature Sensor ("Water Temperature")
 
-## Known issues
+## Partition table
 
-- **Does not build against ESP-IDF 5.5.1**, which is what is installed on this
-  machine. `idf.py build` fails with "Missing required kconfig option after
-  retry", preceded by:
+The built-in `partitions_singleapp_large.csv` (single `factory` app, no OTA).
+A local `partitions.csv` used to sit here but was never selected and was
+malformed - `factory` at `0x10000` overlapped `phy_init` at `0x11000`, and it
+declared `otadata` with no `ota_0`/`ota_1` to switch between. It has been
+removed rather than left as a trap.
 
-      WARNING: The following Kconfig variables were used in "if" clauses, but
-      not found in any Kconfig file:
-          DS18B20_SENSOR_HUB, introduced by espressif/sensor_hub
+## Notes
 
-  Dependency resolution is pulling in `espressif/sensor_hub`, whose Kconfig
-  references a symbol that does not exist. The manifest asks for `idf >=6.0`,
-  so this most likely needs IDF 6.x, or the `ds18b20` dependency pinned to a
-  version that does not drag in `sensor_hub`.
+- Readings are published unconditionally every 30 s. `mazy-iot-sensor` filters
+  on change thresholds; this one does not.
+- With no probe on the bus the firmware still comes up; the sensor task keeps
+  scanning and publishes nothing until one appears.
 
-- **`partitions.csv` is not the table in use.** `sdkconfig` selects
-  `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE`, so
-  `partitions_singleapp_large.csv` is built instead. The local file is also
-  malformed - `factory` starts at `0x10000` while `phy_init` sits at
-  `0x11000`, inside it - and it declares an `otadata` partition with no
-  `ota_0`/`ota_1` to switch between, so OTA would not work as written.
+## TODO
 
-- **`init_onewire()` retries forever** if no sensor is found. The loop
-  condition is `while (sensors_count == 0 || cnt > 60)`; the `cnt > 60` guard
-  is inverted and never fires, so a missing or miswired probe hangs boot
-  before WiFi-dependent tasks are useful.
-
-- Readings are published unconditionally every 30 s. The sibling project
-  filters on change thresholds; this one does not.
+- **OTA.** The other sensors moved to dual-slot OTA and no longer need USB.
+  This one cannot yet: the app is 1.11 MB and `sdkconfig` declares 2 MB of
+  flash, which will not hold two slots. The C3 Super Mini usually ships 4 MB -
+  confirm with `esptool flash_id` while the board is connected, and if it is
+  4 MB, copy the layout and `/api/update` handler from
+  `esp32/home/mazy-iot-sensor`. Note the conversion needs one serial flash and
+  must keep `nvs` at `0x9000`/`0x6000` to preserve HomeKit pairing.
+- **WiFi manager**, same as the other sensors: credentials into NVS instead of
+  `sdkconfig`.

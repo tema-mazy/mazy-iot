@@ -173,36 +173,77 @@ homekit_characteristic_t cha_name = HOMEKIT_CHARACTERISTIC_(NAME, ACCESSORY_NAME
 homekit_characteristic_t cha_sn = HOMEKIT_CHARACTERISTIC_(SERIAL_NUMBER, ACCESSORY_SN);
 homekit_characteristic_t cha_temperature = HOMEKIT_CHARACTERISTIC_(CURRENT_TEMPERATURE, 0);
 
+#define MQTT_TOPIC_TEMPERATURE "sensors/beczka_water/temperature"
+#define MQTT_TOPIC_STATUS      "sensors/beczka_water/status"
+
+static int scan_sensors(void);
+static void drop_sensors(void);
+
 void mqtt_publish_temperature(float temperature) {
     if (mqtt_client) {
         char payload[32];
         snprintf(payload, sizeof(payload), "%.2f", temperature);
-        esp_mqtt_client_publish(mqtt_client, "sensors/beczka_water/temperature", payload, 0, 1, 0);
+        esp_mqtt_client_publish(mqtt_client, MQTT_TOPIC_TEMPERATURE, payload, 0, 1, 0);
+    }
+}
+
+// Nobody reads the console on a deployed board, so the probe state has to be
+// visible without one: retained on MQTT, and on the LED for someone standing
+// in front of the device.
+static void report_health(bool ok) {
+    static int last = -1;
+    if (last == (int)ok) {
+        return;                 // only publish on change
+    }
+    last = (int)ok;
+
+    led_write(!ok);             // lit means "no probe"
+
+    if (mqtt_client) {
+        esp_mqtt_client_publish(mqtt_client, MQTT_TOPIC_STATUS,
+                                ok ? "ok" : "no_sensor", 0, 1, 1 /* retain */);
     }
 }
 
 void th_sensor_task(void *pvParameters) {
-    float temperature=-127 ;
-    
     int elapsed_time = 0;
 
     while (1) {
-            if (elapsed_time >= periodic_interval) {
+        if (elapsed_time >= periodic_interval) {
+            elapsed_time = 0;
 
-        for (int i = 0; i < sensors_count; i++) {
-            ESP_ERROR_CHECK(ds18b20_trigger_temperature_conversion(sensors[i]));
-            vTaskDelay(pdMS_TO_TICKS(750));  // max conversion time
-            ESP_ERROR_CHECK(ds18b20_get_temperature(sensors[i], &temperature));
-            ESP_LOGI("DS18", "Sensor %d: %.2f °C", i, temperature);
-
-        }
-        
-        if ( temperature != -127 ) {
-               mqtt_publish_temperature(temperature);
-               homekit_characteristic_notify(&cha_temperature, HOMEKIT_FLOAT(temperature));
-        }
-               elapsed_time = 0;
+            // Keep looking, forever. A probe that was never connected and one
+            // that was unplugged after the fact are the same case.
+            if (sensors_count == 0) {
+                scan_sensors();
             }
+
+            for (int i = 0; i < sensors_count; i++) {
+                float temperature = -127;
+
+                esp_err_t err = ds18b20_trigger_temperature_conversion(sensors[i]);
+                if (err == ESP_OK) {
+                    vTaskDelay(pdMS_TO_TICKS(750));  // max conversion time
+                    err = ds18b20_get_temperature(sensors[i], &temperature);
+                }
+
+                if (err != ESP_OK || temperature == -127) {
+                    // Do not restart the device over a bad read: release the
+                    // probe and let the next cycle rediscover it.
+                    ESP_LOGW("DS18", "sensor %d read failed (%s), rescanning",
+                             i, esp_err_to_name(err));
+                    drop_sensors();
+                    break;
+                }
+
+                ESP_LOGI("DS18", "Sensor %d: %.2f C", i, temperature);
+                mqtt_publish_temperature(temperature);
+                homekit_characteristic_notify(&cha_temperature,
+                                              HOMEKIT_FLOAT(temperature));
+            }
+
+            report_health(sensors_count > 0);
+        }
 
         vTaskDelay(pdMS_TO_TICKS(10000));
         elapsed_time += 10;
@@ -257,31 +298,44 @@ static void on_wifi_ready() {
 
 }
 
+// Bring up the bus only. Scanning happens in the sensor task, so a missing
+// probe cannot stop WiFi, HomeKit and MQTT from coming up.
 void init_onewire() {
     ESP_ERROR_CHECK(onewire_new_bus_rmt(&bus_cfg, &rmt_cfg, &bus));
     ESP_LOGI("ONEWIRE", "1-Wire bus ready");
+}
 
+// Release every registered device, so the next scan can re-register whatever
+// is actually on the bus. Used when a probe stops responding.
+static void drop_sensors(void) {
+    for (int i = 0; i < sensors_count; i++) {
+        ds18b20_del_device(sensors[i]);
+        sensors[i] = NULL;
+    }
+    sensors_count = 0;
+}
+
+// One scan pass. Returns the number of devices registered.
+static int scan_sensors(void) {
     onewire_device_iter_handle_t iter = NULL;
-
     onewire_device_t dev;
-    int cnt = 0;
 
-    while (sensors_count == 0 || cnt > 60) {
-        ESP_ERROR_CHECK(onewire_new_device_iter(bus, &iter));
-        ESP_LOGI("ONEWIRE", "Searching devices...");
-        while (onewire_device_iter_get_next(iter, &dev) == ESP_OK && cnt < MAX_SENSORS) {
+    if (onewire_new_device_iter(bus, &iter) != ESP_OK) {
+        ESP_LOGE("ONEWIRE", "cannot start device iterator");
+        return 0;
+    }
+
+    while (sensors_count < MAX_SENSORS &&
+           onewire_device_iter_get_next(iter, &dev) == ESP_OK) {
         ds18b20_config_t cfg = {}; // default config
         if (ds18b20_new_device(&dev, &cfg, &sensors[sensors_count]) == ESP_OK) {
-            ESP_LOGI("ONEWIRE", "DS18B20[%d] found (ROM: %016llX)", sensors_count, dev.address);
-            cnt++;
+            ESP_LOGI("ONEWIRE", "DS18B20[%d] found (ROM: %016llX)",
+                     sensors_count, dev.address);
             sensors_count++;
         }
-        }
-        onewire_del_device_iter(iter);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-
     }
-    ESP_LOGI("ONEWIRE", "%d sensor(s) registered", cnt);
+    onewire_del_device_iter(iter);
+    return sensors_count;
 }
 
 void app_main(void) {
